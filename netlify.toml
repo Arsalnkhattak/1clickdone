@@ -1,0 +1,10 @@
+[build]
+  base    = "client"
+  command = "npm run build"
+  publish = "client/dist"
+
+# SPA routing — send all routes to index.html so React Router works
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
