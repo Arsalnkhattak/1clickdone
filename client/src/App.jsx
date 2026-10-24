@@ -14,6 +14,7 @@ import CnicStudioPage from './pages/services/CnicStudioPage';
 import PassportStudioPage from './pages/services/PassportStudioPage';
 import CustomPrintStudioPage from './pages/services/CustomPrintStudioPage';
 import ApplicationStudioPage from './pages/applications/ApplicationStudioPage';
+import PrintingPage from './pages/printing/PrintingPage';
 import {
   HiOutlineClock,
   HiOutlineHome,
@@ -106,8 +107,10 @@ export default function App() {
               <Route path="/cnic" element={<CnicStudioPage />} />
               <Route path="/passport" element={<PassportStudioPage />} />
               <Route path="/photos" element={<CustomPrintStudioPage />} />
-              <Route path="/a4-print" element={<ComingSoon title="A4 Printing Studio" />} />
-              <Route path="/custom-print" element={<CustomPrintStudioPage />} />
+              <Route path="/printing" element={<PrintingPage />} />
+              {/* Legacy redirects so old bookmarks still work */}
+              <Route path="/a4-print" element={<Navigate to="/printing" replace />} />
+              <Route path="/custom-print" element={<Navigate to="/printing?tab=custom" replace />} />
               {/* Phase 5: Job, University & College Applications */}
               <Route path="/job-applications" element={<ApplicationStudioPage type="job_application" />} />
               <Route path="/university" element={<ApplicationStudioPage type="university_admission" />} />
