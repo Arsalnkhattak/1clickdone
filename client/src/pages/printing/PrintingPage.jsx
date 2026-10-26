@@ -13,7 +13,7 @@ import api from '../../api/axios';
 import Button from '../../components/ui/Button';
 import FilePreviewModal from '../../components/documents/FilePreviewModal';
 import ImageEditorModal from '../../components/editor/ImageEditorModal';
-import ScanDocumentsPage from '../documents/ScanDocumentsPage';
+import ScanDocumentsPage, { ScanDocumentsTab } from '../documents/ScanDocumentsPage';
 import CnicStudioPage from '../services/CnicStudioPage';
 import toast from 'react-hot-toast';
 import {
@@ -714,7 +714,7 @@ export default function PrintingPage() {
 
       {/* Tab content */}
       <div>
-        {activeTab === 'scan'     && <ScanDocumentsPage />}
+        {activeTab === 'scan'     && <ScanDocumentsTab tasks={tasks} />}
         {activeTab === 'cnic'     && <CnicStudioPage />}
         {activeTab === 'a4'       && <A4PrintingTab       tasks={tasks} token={token} />}
         {activeTab === 'custom'   && <CustomPrintingTab   tasks={tasks} token={token} />}
