@@ -1,5 +1,7 @@
 /**
  * PrintingPage — unified printing hub with tabs:
+ *   • Scan & Documents  — scan, reorder, rotate, generate PDF
+ *   • CNIC Printing     — 100% scale CNIC photocopy layout
  *   • A4 Printing       — upload files, set layout, generate print-ready PDF
  *   • Custom Printing   — exact dimensions (mm/cm/in), multi-copy grid
  *   • Multiple Files    — upload many files at once, merge into one PDF
@@ -11,6 +13,8 @@ import api from '../../api/axios';
 import Button from '../../components/ui/Button';
 import FilePreviewModal from '../../components/documents/FilePreviewModal';
 import ImageEditorModal from '../../components/editor/ImageEditorModal';
+import ScanDocumentsPage from '../documents/ScanDocumentsPage';
+import CnicStudioPage from '../services/CnicStudioPage';
 import toast from 'react-hot-toast';
 import {
   HiOutlinePrinter,
@@ -28,15 +32,20 @@ import {
   HiOutlineRefresh,
   HiOutlinePencil,
   HiOutlineClock,
+  HiOutlineDocumentSearch,
+  HiOutlineCamera,
+  HiOutlineScissors,
+  HiOutlineSparkles,
 } from 'react-icons/hi';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 const TABS = [
+  { id: 'scan',     label: 'Scan & Documents', icon: HiOutlineDocumentSearch },
+  { id: 'cnic',     label: 'CNIC Printing',    icon: HiOutlineIdentification },
   { id: 'a4',       label: 'A4 Printing',      icon: HiOutlinePrinter },
-  { id: 'custom',   label: 'Custom Printing',   icon: HiOutlineTemplate },
-  { id: 'multiple', label: 'Multiple Files',    icon: HiOutlineCollection },
-  { id: 'poster',   label: 'Poster / Large',    icon: HiOutlineViewGrid },
-  { id: 'idcard',   label: 'ID Card Print',     icon: HiOutlineIdentification },
+  { id: 'custom',   label: 'Custom Printing',  icon: HiOutlineTemplate },
+  { id: 'multiple', label: 'Multiple Files',   icon: HiOutlineCollection },
+  { id: 'poster',   label: 'Poster / Large',   icon: HiOutlineViewGrid },
 ];
 
 // ─── Reusable task selector ───────────────────────────────────────────────────
@@ -677,7 +686,7 @@ export default function PrintingPage() {
           Printing Studio
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          A4 printing, custom sizes, merge multiple files, and more — all in one place
+          Scan & documents, CNIC, A4, custom sizes, merge multiple files — all in one place
         </p>
       </div>
 
@@ -705,11 +714,12 @@ export default function PrintingPage() {
 
       {/* Tab content */}
       <div>
+        {activeTab === 'scan'     && <ScanDocumentsPage />}
+        {activeTab === 'cnic'     && <CnicStudioPage />}
         {activeTab === 'a4'       && <A4PrintingTab       tasks={tasks} token={token} />}
         {activeTab === 'custom'   && <CustomPrintingTab   tasks={tasks} token={token} />}
         {activeTab === 'multiple' && <MultipleFilesTab    tasks={tasks} token={token} />}
         {activeTab === 'poster'   && <ComingSoonTab title="Poster & Large Format Printing" description="Print banners, posters, and large format documents. Coming soon." />}
-        {activeTab === 'idcard'   && <ComingSoonTab title="ID Card Printing" description="Custom ID card layouts with batch printing support. Coming soon." />}
       </div>
     </div>
   );
