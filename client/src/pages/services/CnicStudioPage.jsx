@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import Button from '../../components/ui/Button';
 import ImageEditorModal from '../../components/editor/ImageEditorModal';
 import FilePreviewModal from '../../components/documents/FilePreviewModal';
+import SmartScanner from '../../components/documents/SmartScanner';
 import toast from 'react-hot-toast';
 import {
   HiOutlineIdentification,
@@ -13,6 +14,7 @@ import {
   HiOutlineScissors,
   HiOutlineSparkles,
   HiOutlineRefresh,
+  HiOutlineCamera,
 } from 'react-icons/hi';
 
 export default function CnicStudioPage() {
@@ -22,9 +24,10 @@ export default function CnicStudioPage() {
   const [originalBackFile, setOriginalBackFile] = useState(null);
   const [uploadingFront, setUploadingFront] = useState(false);
   const [uploadingBack, setUploadingBack] = useState(false);
-  const [autoCroppingFront, setAutoCroppingFront] = useState(false);
-  const [autoCroppingBack, setAutoCroppingBack] = useState(false);
-  const [autoCropOnUpload, setAutoCropOnUpload] = useState(true);
+
+  // SmartScanner modal state — which slot is being scanned
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerSlot, setScannerSlot] = useState(null); // 'front' | 'back'
 
   // Layout settings
   const [quantity, setQuantity] = useState(1);
@@ -37,7 +40,7 @@ export default function CnicStudioPage() {
 
   // Editing state
   const [editingStorageKey, setEditingStorageKey] = useState(null);
-  const [editingTarget, setEditingTarget] = useState(null); // 'front' or 'back'
+  const [editingTarget, setEditingTarget] = useState(null);
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -45,59 +48,22 @@ export default function CnicStudioPage() {
   const [previewFile, setPreviewFile] = useState(null);
 
   useEffect(() => {
-    const fetchTasks = async () => {
-      try {
-        const res = await api.get('/tasks?category=cnic&limit=30&isArchived=false');
-        setTasks(res.data.data.tasks);
-      } catch {
-        // Fallback silently
-      }
-    };
-    fetchTasks();
+    api.get('/tasks?category=cnic&limit=30&isArchived=false')
+      .then(res => setTasks(res.data.data.tasks))
+      .catch(() => {});
   }, []);
 
-  const handleAutoCrop = async (slot) => {
-    const current = slot === 'front' ? (originalFrontFile || frontFile) : (originalBackFile || backFile);
-    if (!current) return;
-
-    try {
-      if (slot === 'front') setAutoCroppingFront(true);
-      else setAutoCroppingBack(true);
-
-      const res = await api.post('/print-layouts/auto-crop', {
-        storageKey: current.storageKey,
-        enhance: true,
-      });
-
-      const cropped = res.data.data;
-      if (slot === 'front') {
-        setFrontFile(cropped);
-        toast.success('✨ Front side auto-straightened & cropped!');
-      } else {
-        setBackFile(cropped);
-        toast.success('✨ Back side auto-straightened & cropped!');
-      }
-    } catch {
-      toast.error('Could not auto-crop. Please use Crop & Straighten editor.');
-    } finally {
-      if (slot === 'front') setAutoCroppingFront(false);
-      else setAutoCroppingBack(false);
-    }
+  // ── Open SmartScanner for a slot ──────────────────────────────────────────
+  const openScanner = (slot) => {
+    setScannerSlot(slot);
+    setScannerOpen(true);
   };
 
-  const handleRevertOriginal = (slot) => {
-    if (slot === 'front' && originalFrontFile) {
-      setFrontFile(originalFrontFile);
-      toast('Reverted to original photo');
-    } else if (slot === 'back' && originalBackFile) {
-      setBackFile(originalBackFile);
-      toast('Reverted to original photo');
-    }
-  };
-
-  const handleUploadSlot = async (e, slot) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // ── Called by SmartScanner when user confirms a scan ──────────────────────
+  // Receives a File object (already warped + filtered on client side)
+  const handleScanned = async (file) => {
+    setScannerOpen(false);
+    const slot = scannerSlot;
 
     const formData = new FormData();
     formData.append('files', file);
@@ -109,38 +75,43 @@ export default function CnicStudioPage() {
       const res = await api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-
       const uploaded = res.data.data[0];
 
       if (slot === 'front') {
         setOriginalFrontFile(uploaded);
         setFrontFile(uploaded);
+        toast.success('✨ Front side scanned & straightened!');
       } else {
         setOriginalBackFile(uploaded);
         setBackFile(uploaded);
+        toast.success('✨ Back side scanned & straightened!');
       }
+    } catch {
+      toast.error('Upload failed after scan');
+    } finally {
+      if (slot === 'front') setUploadingFront(false);
+      else setUploadingBack(false);
+    }
+  };
 
-      // If autoCropOnUpload is active, automatically straighten and crop card
-      if (autoCropOnUpload) {
-        try {
-          const cropRes = await api.post('/print-layouts/auto-crop', {
-            storageKey: uploaded.storageKey,
-            enhance: true,
-          });
-          const cropped = cropRes.data.data;
-          if (slot === 'front') {
-            setFrontFile(cropped);
-            toast.success('✨ Front uploaded, straightened & cropped!');
-          } else {
-            setBackFile(cropped);
-            toast.success('✨ Back uploaded, straightened & cropped!');
-          }
-        } catch {
-          toast.success(slot === 'front' ? 'Front uploaded' : 'Back uploaded');
-        }
-      } else {
-        toast.success(slot === 'front' ? 'Front uploaded' : 'Back uploaded');
-      }
+  // ── Regular file upload (no scanning) ────────────────────────────────────
+  const handleUploadSlot = async (e, slot) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('files', file);
+    try {
+      if (slot === 'front') setUploadingFront(true);
+      else setUploadingBack(true);
+
+      const res = await api.post('/documents/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const uploaded = res.data.data[0];
+
+      if (slot === 'front') { setOriginalFrontFile(uploaded); setFrontFile(uploaded); }
+      else { setOriginalBackFile(uploaded); setBackFile(uploaded); }
+      toast.success(slot === 'front' ? 'Front uploaded' : 'Back uploaded');
     } catch {
       toast.error('Upload failed');
     } finally {
@@ -150,22 +121,27 @@ export default function CnicStudioPage() {
     }
   };
 
+  const handleRevertOriginal = (slot) => {
+    if (slot === 'front' && originalFrontFile) {
+      setFrontFile(originalFrontFile);
+      toast('Reverted to original');
+    } else if (slot === 'back' && originalBackFile) {
+      setBackFile(originalBackFile);
+      toast('Reverted to original');
+    }
+  };
+
   const handleOpenEditor = (target) => {
-    if (target === 'front' && frontFile) {
-      setEditingStorageKey(frontFile.storageKey);
-      setEditingTarget('front');
-    } else if (target === 'back' && backFile) {
-      setEditingStorageKey(backFile.storageKey);
-      setEditingTarget('back');
+    const file = target === 'front' ? frontFile : backFile;
+    if (file) {
+      setEditingStorageKey(file.storageKey);
+      setEditingTarget(target);
     }
   };
 
   const handleImageSaved = (savedFile) => {
-    if (editingTarget === 'front') {
-      setFrontFile(savedFile);
-    } else {
-      setBackFile(savedFile);
-    }
+    if (editingTarget === 'front') setFrontFile(savedFile);
+    else setBackFile(savedFile);
   };
 
   const handleGenerateCnic = async () => {
@@ -173,10 +149,9 @@ export default function CnicStudioPage() {
       toast.error('Please upload both Front and Back sides of the CNIC');
       return;
     }
-
     try {
       setGenerating(true);
-      const payload = {
+      const res = await api.post('/print-layouts/cnic', {
         frontStorageKey: frontFile.storageKey,
         backStorageKey: backFile.storageKey,
         quantity: parseInt(quantity, 10),
@@ -184,13 +159,11 @@ export default function CnicStudioPage() {
         showCutMarks,
         taskId: selectedTaskId || undefined,
         outputName: `CNIC_Print_${quantity}copies.pdf`,
-      };
-
-      const res = await api.post('/print-layouts/cnic', payload);
+      });
       setGeneratedPdf(res.data.data);
       toast.success(
         selectedTaskId
-          ? 'CNIC PDF generated & attached to customer task in 1Click!'
+          ? 'CNIC PDF generated & attached to task!'
           : 'CNIC PDF generated successfully!'
       );
     } catch (err) {
@@ -202,271 +175,199 @@ export default function CnicStudioPage() {
 
   const token = localStorage.getItem('1click_token');
 
+  // ── Reusable upload slot renderer ─────────────────────────────────────────
+  const renderSlot = (slot) => {
+    const isfront    = slot === 'front';
+    const file       = isfront ? frontFile       : backFile;
+    const origFile   = isfront ? originalFrontFile : originalBackFile;
+    const uploading  = isfront ? uploadingFront  : uploadingBack;
+    const label      = isfront ? 'CNIC Front Side' : 'CNIC Back Side';
+    const altText    = isfront ? 'CNIC Front'    : 'CNIC Back';
+
+    return (
+      <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
+        {/* Slot header */}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-bold text-gray-900 text-sm">{label}</h3>
+          {file && (
+            <div className="flex items-center gap-1.5">
+              {/* Smart Scan — opens SmartScanner modal */}
+              <Button size="sm" variant="secondary"
+                onClick={() => openScanner(slot)}
+                className="flex items-center gap-1 text-emerald-700 border-emerald-300 hover:bg-emerald-50">
+                <HiOutlineCamera className="w-3.5 h-3.5" />
+                Smart Scan
+              </Button>
+              {/* Manual crop editor */}
+              <Button size="sm" variant="secondary" onClick={() => handleOpenEditor(slot)}>
+                <HiOutlineScissors className="w-3.5 h-3.5 mr-1 text-blue-600" />
+                Crop & Edit
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Preview / upload area */}
+        <div className="h-48 bg-slate-50 border-2 border-dashed border-gray-300 rounded-xl
+          flex items-center justify-center p-3 relative overflow-hidden">
+          {file ? (
+            <img
+              src={`/api/documents/file/${file.storageKey}?token=${token}`}
+              alt={altText}
+              className="max-h-full max-w-full object-contain rounded shadow-xs"
+            />
+          ) : (
+            <div className="text-center space-y-3">
+              <HiOutlineIdentification className="w-10 h-10 text-gray-400 mx-auto" />
+              <p className="text-xs text-gray-500">
+                {isfront ? 'Upload or scan Front side of CNIC' : 'Upload or scan Back side of CNIC'}
+              </p>
+              {/* Smart Scan — primary CTA when empty */}
+              <button
+                onClick={() => openScanner(slot)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600
+                  hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors"
+              >
+                <HiOutlineCamera className="w-4 h-4" />
+                Smart Scan (Auto-Crop)
+              </button>
+              {/* Plain upload */}
+              <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5
+                border border-gray-300 text-gray-600 rounded-lg text-xs font-semibold
+                hover:bg-gray-50 transition-colors">
+                <HiOutlineUpload className="w-4 h-4" />
+                {uploading ? 'Uploading…' : 'Upload File'}
+                <input type="file" accept="image/*"
+                  onChange={e => handleUploadSlot(e, slot)} className="hidden" />
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* Revert / replace row */}
+        {file && (
+          <div className="flex items-center justify-between text-xs pt-1">
+            {origFile && origFile.storageKey !== file.storageKey ? (
+              <button onClick={() => handleRevertOriginal(slot)}
+                className="text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
+                <HiOutlineRefresh className="w-3 h-3" /> Revert to Original
+              </button>
+            ) : <span />}
+            <label className="cursor-pointer text-blue-600 hover:underline font-medium">
+              Replace Image
+              <input type="file" accept="image/*"
+                onChange={e => handleUploadSlot(e, slot)} className="hidden" />
+            </label>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Top Header */}
+
+      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
           <HiOutlineIdentification className="w-7 h-7 text-blue-600" />
           CNIC Printing Studio
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          Standard Pakistani ID card (85.6 × 54 mm) starting 5 mm from top of page. Supports both odd & even copy duplex layouts.
+          Standard Pakistani ID card (85.6 × 54 mm) — odd & even copy duplex support.
+          Use <span className="font-semibold text-emerald-700">Smart Scan</span> to auto-detect,
+          straighten and crop the card from a raw phone photo.
         </p>
       </div>
 
-      {/* Generated Banner */}
+      {/* Smart Scan info banner */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex flex-wrap items-center gap-3">
+        <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+          <HiOutlineSparkles className="w-5 h-5" />
+        </div>
+        <div>
+          <span className="text-sm font-bold text-emerald-900 block">
+            Smart Scan — Auto Straighten &amp; Crop
+          </span>
+          <span className="text-xs text-emerald-700 block mt-0.5">
+            Take a raw phone photo of the CNIC → OpenCV detects edges → perspective warp straightens it →
+            Magic filter sharpens the text. No server round-trip needed.
+          </span>
+        </div>
+      </div>
+
+      {/* Generated PDF banner */}
       {generatedPdf && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4
+          flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
               <HiOutlineCheck className="w-6 h-6" />
             </div>
             <div>
               <div className="text-sm font-bold text-emerald-900">
-                Print-Ready PDF Created ({generatedPdf.copiesCount} {generatedPdf.copiesCount === 1 ? 'copy' : 'copies'} · {generatedPdf.rowsCount} {generatedPdf.rowsCount === 1 ? 'row' : 'rows'} · {generatedPdf.pagesCount} {generatedPdf.pagesCount === 1 ? 'page' : 'pages'})
+                Print-Ready PDF Created ({generatedPdf.copiesCount}{' '}
+                {generatedPdf.copiesCount === 1 ? 'copy' : 'copies'} ·{' '}
+                {generatedPdf.rowsCount} {generatedPdf.rowsCount === 1 ? 'row' : 'rows'} ·{' '}
+                {generatedPdf.pagesCount} {generatedPdf.pagesCount === 1 ? 'page' : 'pages'})
               </div>
               <div className="text-xs text-emerald-700 mt-0.5">
                 {generatedPdf.pagesCount === 1
-                  ? 'Even copies: Print same page on both sides (long-edge flip) for double-sided CNIC photocopy.'
-                  : 'Odd copies: Print Page 1 on front, Page 2 on back (long-edge flip) for perfectly aligned double-sided cards.'}
+                  ? 'Even copies: print same page on both sides (long-edge flip).'
+                  : 'Odd copies: Page 1 front, Page 2 back (long-edge flip).'}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                setPreviewFile({
-                  storageKey: generatedPdf.filename,
-                  originalName: generatedPdf.originalName,
-                  mimeType: 'application/pdf',
-                })
-              }
-            >
-              <HiOutlineEye className="w-4 h-4 mr-1" />
-              Preview Output
+            <Button size="sm" variant="secondary" onClick={() => setPreviewFile({
+              storageKey: generatedPdf.filename,
+              originalName: generatedPdf.originalName,
+              mimeType: 'application/pdf',
+            })}>
+              <HiOutlineEye className="w-4 h-4 mr-1" /> Preview
             </Button>
-            <a
-              href={`/api/documents/file/${generatedPdf.filename}?token=${token}&download=true`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold"
-            >
-              <HiOutlineDownload className="w-4 h-4" />
-              Download PDF
+            <a href={`/api/documents/file/${generatedPdf.filename}?token=${token}&download=true`}
+              target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600
+                hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold">
+              <HiOutlineDownload className="w-4 h-4" /> Download PDF
             </a>
           </div>
         </div>
       )}
 
-      {/* Auto-Scan & Straighten Toggle Banner */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
-            <HiOutlineSparkles className="w-5 h-5 text-amber-500" />
-          </div>
-          <div>
-            <span className="text-sm font-bold text-blue-900 block">
-              Auto-Scan, Deskew & Crop System
-            </span>
-            <span className="text-xs text-blue-700 block mt-0.5">
-              Automatically straightens tilted phone photos (تصویر ٹیڑھی ہو تو سیدھی کرتا ہے) and removes background clutter.
-            </span>
-          </div>
-        </div>
-        <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-blue-300 shadow-2xs hover:bg-blue-50">
-          <input
-            type="checkbox"
-            checked={autoCropOnUpload}
-            onChange={(e) => setAutoCropOnUpload(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-          />
-          <span className="text-xs font-semibold text-blue-900 select-none">
-            Auto-Scan on Upload
-          </span>
-        </label>
-      </div>
-
-      {/* Grid: Upload Slots & Settings */}
+      {/* Upload slots */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Slot 1: Front Side */}
-        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <h3 className="font-bold text-gray-900 text-sm">CNIC Front Side</h3>
-            <div className="flex items-center gap-1.5">
-              {frontFile && (
-                <>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleAutoCrop('front')}
-                    loading={autoCroppingFront}
-                    title="Automatically deskew and crop card"
-                  >
-                    <HiOutlineSparkles className="w-3.5 h-3.5 mr-1 text-amber-500" />
-                    Auto-Scan
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => handleOpenEditor('front')}>
-                    <HiOutlineScissors className="w-3.5 h-3.5 mr-1 text-blue-600" />
-                    Crop & Straighten
-                  </Button>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="h-48 bg-slate-50 border-2 border-dashed border-gray-300 rounded-xl flex items-center justify-center p-3 relative overflow-hidden">
-            {frontFile ? (
-              <img
-                src={`/api/documents/file/${frontFile.storageKey}?token=${token}`}
-                alt="CNIC Front"
-                className="max-h-full max-w-full object-contain rounded shadow-xs"
-              />
-            ) : (
-              <div className="text-center space-y-2">
-                <HiOutlineIdentification className="w-10 h-10 text-gray-400 mx-auto" />
-                <p className="text-xs text-gray-500">Upload or snap Front side of CNIC</p>
-                <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700">
-                  <HiOutlineUpload className="w-4 h-4" />
-                  {uploadingFront ? 'Uploading & Scanning...' : 'Choose Front Image'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => handleUploadSlot(e, 'front')}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            )}
-          </div>
-          {frontFile && (
-            <div className="flex items-center justify-between text-xs pt-1">
-              {originalFrontFile && originalFrontFile.storageKey !== frontFile.storageKey ? (
-                <button
-                  type="button"
-                  onClick={() => handleRevertOriginal('front')}
-                  className="text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
-                >
-                  <HiOutlineRefresh className="w-3 h-3" /> Revert to Raw Photo
-                </button>
-              ) : <span />}
-              <label className="cursor-pointer text-blue-600 hover:underline font-medium">
-                Replace Front Image
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleUploadSlot(e, 'front')}
-                  className="hidden"
-                />
-              </label>
-            </div>
-          )}
-        </div>
-
-        {/* Slot 2: Back Side */}
-        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <h3 className="font-bold text-gray-900 text-sm">CNIC Back Side</h3>
-            <div className="flex items-center gap-1.5">
-              {backFile && (
-                <>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleAutoCrop('back')}
-                    loading={autoCroppingBack}
-                    title="Automatically deskew and crop card"
-                  >
-                    <HiOutlineSparkles className="w-3.5 h-3.5 mr-1 text-amber-500" />
-                    Auto-Scan
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => handleOpenEditor('back')}>
-                    <HiOutlineScissors className="w-3.5 h-3.5 mr-1 text-blue-600" />
-                    Crop & Straighten
-                  </Button>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="h-48 bg-slate-50 border-2 border-dashed border-gray-300 rounded-xl flex items-center justify-center p-3 relative overflow-hidden">
-            {backFile ? (
-              <img
-                src={`/api/documents/file/${backFile.storageKey}?token=${token}`}
-                alt="CNIC Back"
-                className="max-h-full max-w-full object-contain rounded shadow-xs"
-              />
-            ) : (
-              <div className="text-center space-y-2">
-                <HiOutlineIdentification className="w-10 h-10 text-gray-400 mx-auto" />
-                <p className="text-xs text-gray-500">Upload or snap Back side of CNIC</p>
-                <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700">
-                  <HiOutlineUpload className="w-4 h-4" />
-                  {uploadingBack ? 'Uploading & Scanning...' : 'Choose Back Image'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => handleUploadSlot(e, 'back')}
-                    className="hidden"
-                  />
-                </label>
-              </div>
-            )}
-          </div>
-          {backFile && (
-            <div className="flex items-center justify-between text-xs pt-1">
-              {originalBackFile && originalBackFile.storageKey !== backFile.storageKey ? (
-                <button
-                  type="button"
-                  onClick={() => handleRevertOriginal('back')}
-                  className="text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
-                >
-                  <HiOutlineRefresh className="w-3 h-3" /> Revert to Raw Photo
-                </button>
-              ) : <span />}
-              <label className="cursor-pointer text-blue-600 hover:underline font-medium">
-                Replace Back Image
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleUploadSlot(e, 'back')}
-                  className="hidden"
-                />
-              </label>
-            </div>
-          )}
-        </div>
+        {renderSlot('front')}
+        {renderSlot('back')}
       </div>
 
-      {/* Print Configuration Card */}
+      {/* Print settings */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-4">
-        <h3 className="font-bold text-gray-900 text-base">Photocopy & Print Settings</h3>
+        <h3 className="font-bold text-gray-900 text-base">Photocopy &amp; Print Settings</h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">
-              Number of Copies (Odd & Even Supported)
+              Number of Copies
             </label>
-            <select
-              value={quantity}
-              onChange={(e) => setQuantity(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value={1}>1 Copy (2 Pages: Front on P1, Back on P2)</option>
-              <option value={2}>2 Copies (1 Page: 1 Row Front + Back)</option>
-              <option value={3}>3 Copies (2 Pages: 1 Full Row + 1 Single Copy)</option>
+            <select value={quantity} onChange={e => setQuantity(Number(e.target.value))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white
+                focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value={1}>1 Copy (2 Pages: Front P1, Back P2)</option>
+              <option value={2}>2 Copies (1 Page: 1 Row)</option>
+              <option value={3}>3 Copies (2 Pages: 1 Full Row + 1 Single)</option>
               <option value={4}>4 Copies (1 Page: 2 Full Rows)</option>
-              <option value={5}>5 Copies (2 Pages: 2 Full Rows + 1 Single Copy)</option>
+              <option value={5}>5 Copies (2 Pages: 2 Full Rows + 1 Single)</option>
               <option value={6}>6 Copies (1 Page: 3 Full Rows)</option>
-              <option value={7}>7 Copies (2 Pages: 3 Full Rows + 1 Single Copy)</option>
+              <option value={7}>7 Copies (2 Pages: 3 Full Rows + 1 Single)</option>
               <option value={8}>8 Copies (1 Page: 4 Full Rows)</option>
-              <option value={9}>9 Copies (2 Pages: 4 Full Rows + 1 Single Copy)</option>
+              <option value={9}>9 Copies (2 Pages: 4 Full Rows + 1 Single)</option>
               <option value={10}>10 Copies (1 Page: 5 Full Rows)</option>
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Starts 5 mm from top of page. Even copies generate 1 page (same print on both sides). Odd copies generate 2 pages (P1 front, P2 back).
+            <p className="mt-1 text-xs text-gray-400">
+              Starts 5 mm from top. Even = 1 page (print both sides). Odd = 2 pages.
             </p>
           </div>
 
@@ -474,11 +375,9 @@ export default function CnicStudioPage() {
             <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">
               Paper Format
             </label>
-            <select
-              value={paperSize}
-              onChange={(e) => setPaperSize(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
+            <select value={paperSize} onChange={e => setPaperSize(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white
+                focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="A4">A4 Paper (Standard)</option>
               <option value="Letter">Letter Size</option>
               <option value="A5">A5 Paper</option>
@@ -486,31 +385,24 @@ export default function CnicStudioPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 pt-1">
-          <input
-            type="checkbox"
-            id="cutMarks"
-            checked={showCutMarks}
-            onChange={(e) => setShowCutMarks(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="cutMarks" checked={showCutMarks}
+            onChange={e => setShowCutMarks(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
           <label htmlFor="cutMarks" className="text-xs text-gray-700 cursor-pointer">
-            Include light cut guides & border outlines around cards
+            Include cut guides &amp; border outlines around cards
           </label>
         </div>
 
-        {/* Link to Task */}
         <div>
           <label className="block text-xs font-semibold text-gray-700 uppercase mb-1">
-            Attach directly to Customer Task (Optional)
+            Attach to Customer Task (Optional)
           </label>
-          <select
-            value={selectedTaskId}
-            onChange={(e) => setSelectedTaskId(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
+          <select value={selectedTaskId} onChange={e => setSelectedTaskId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white
+              focus:outline-none focus:ring-2 focus:ring-blue-500">
             <option value="">-- None (Standalone PDF) --</option>
-            {tasks.map((t) => (
+            {tasks.map(t => (
               <option key={t._id} value={t._id}>
                 {t.taskId} — {t.title} ({t.customerId?.name})
               </option>
@@ -518,21 +410,23 @@ export default function CnicStudioPage() {
           </select>
         </div>
 
-        {/* Submit */}
-        <div className="pt-2">
-          <Button
-            variant="primary"
-            onClick={handleGenerateCnic}
-            disabled={!frontFile || !backFile || generating}
-            loading={generating}
-            className="w-full py-3 text-base shadow-md font-bold"
-          >
-            {generating ? 'Calculating 100% Scale...' : 'Done in 1Click — Generate Print-Ready CNIC PDF'}
-          </Button>
-        </div>
+        <Button variant="primary" onClick={handleGenerateCnic}
+          disabled={!frontFile || !backFile || generating} loading={generating}
+          className="w-full py-3 text-base font-bold shadow-md">
+          {generating ? 'Calculating 100% Scale…' : 'Done in 1Click — Generate Print-Ready CNIC PDF'}
+        </Button>
       </div>
 
-      {/* Image Editor Modal */}
+      {/* SmartScanner modal — only mounted when open */}
+      {scannerOpen && (
+        <SmartScanner
+          isOpen={scannerOpen}
+          onClose={() => setScannerOpen(false)}
+          onScanned={handleScanned}
+        />
+      )}
+
+      {/* Image editor modal */}
       <ImageEditorModal
         isOpen={!!editingStorageKey}
         onClose={() => setEditingStorageKey(null)}
@@ -540,7 +434,7 @@ export default function CnicStudioPage() {
         onImageSaved={handleImageSaved}
       />
 
-      {/* PDF Lightbox Modal */}
+      {/* PDF preview modal */}
       <FilePreviewModal
         isOpen={!!previewFile}
         onClose={() => setPreviewFile(null)}
