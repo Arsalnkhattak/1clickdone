@@ -334,38 +334,48 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   const loadImage = useCallback(async (dataUrl) => {
     setError(null);
     setProcessing(true);
+
     const img = new Image();
-    img.onload = async () => {
+    img.onload = () => {
       setOriginalImage(img);
 
-      // Load OpenCV on demand — only triggers the actual download once
-      const cv = await loadCV();
-
-      // Build srcMat from a temp canvas
-      const tmp  = document.createElement('canvas');
-      tmp.width  = img.naturalWidth;
-      tmp.height = img.naturalHeight;
-      tmp.getContext('2d').drawImage(img, 0, 0);
-
-      if (srcMat) { try { srcMat.delete(); } catch {} }
-
-      if (cv) {
-        const mat = cv.imread(tmp);
-        setSrcMat(mat);
-        const detected = detectCorners(cv, mat);
-        setCorners(detected);
-      } else {
-        // No OpenCV — default corners, user can still drag
-        setSrcMat(null);
-        setCorners([
-          { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.05 },
-          { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.05 },
-          { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.95 },
-          { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.95 },
-        ]);
-      }
+      // Show the crop step immediately so the user sees the image
+      // while OpenCV loads / detects in the background
       setStep(STEP.CROP);
+
+      // Set default corners right away — user can interact immediately
+      const defaultCrns = [
+        { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.05 },
+        { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.05 },
+        { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.95 },
+        { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.95 },
+      ];
+      setCorners(defaultCrns);
       setProcessing(false);
+
+      // ── Load OpenCV & detect corners asynchronously in background ──
+      // We do NOT block the main thread here. If OpenCV is already
+      // loaded (sharedLoadPromise resolved) this is instant.
+      loadCV().then((cv) => {
+        if (!cv) return; // no OpenCV available — default corners are fine
+        const tmp  = document.createElement('canvas');
+        tmp.width  = img.naturalWidth;
+        tmp.height = img.naturalHeight;
+        tmp.getContext('2d').drawImage(img, 0, 0);
+
+        // Build srcMat and detect — runs after paint so UI stays responsive
+        requestAnimationFrame(() => {
+          try {
+            if (srcMat) { try { srcMat.delete(); } catch {} }
+            const mat      = cv.imread(tmp);
+            setSrcMat(mat);
+            const detected = detectCorners(cv, mat);
+            setCorners(detected);
+          } catch (err) {
+            console.warn('Corner detection failed:', err.message);
+          }
+        });
+      });
     };
     img.src = dataUrl;
   }, [loadCV, srcMat]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -480,24 +490,25 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   const content = (
     <div className="space-y-4">
 
-      {/* Status bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {cvLoading && (
+      {/* Status bar — only shown when relevant */}
+      <div className="flex items-center gap-2 flex-wrap min-h-[28px]">
+        {/* Only show loading spinner when actually downloading OpenCV */}
+        {cvLoading && step !== STEP.UPLOAD && (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-amber-50 text-amber-700 border border-amber-200">
             <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
             </svg>
-            Loading OpenCV engine…
+            Detecting edges…
           </span>
         )}
-        {cvReady && !cvLoading && (
+        {cvReady && !cvLoading && step === STEP.CROP && (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-            ⚡ OpenCV WASM Engine Ready
+            ⚡ Auto-detection ready
           </span>
         )}
         {cvError && (
-          <span className="text-xs text-amber-600">OpenCV unavailable — manual crop only</span>
+          <span className="text-xs text-amber-600">⚠ OpenCV unavailable — drag handles to crop manually</span>
         )}
       </div>
 
