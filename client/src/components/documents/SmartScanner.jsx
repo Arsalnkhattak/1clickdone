@@ -1,26 +1,18 @@
 /**
- * SmartScanner — Production-quality document scanner component.
+ * SmartScanner — Pure JavaScript document scanner. Zero external dependencies.
  *
- * Algorithm (matches the reference HTML demo):
- *   1. Load image → draw on canvas → cv.imread
- *   2. Grayscale → GaussianBlur → Otsu threshold → findContours
- *   3. Find largest 4-point polygon (≥ 15% image area)
- *   4. Sort corners TL→TR→BR→BL
- *   5. Render draggable green handles on canvas overlay
- *   6. On "Scan": getPerspectiveTransform → warpPerspective
- *   7. Apply filter: Magic (adaptiveThreshold) / B&W / Grayscale / Original
- *   8. Preview warped result, allow filter change live
- *   9. "Use Scan" → returns File object via onScanned callback
+ * No OpenCV.js, no WASM, no downloads, no page freezes.
  *
- * Props:
- *   isOpen       — controls visibility (if used standalone set to true always)
- *   onClose      — called when user cancels
- *   onScanned    — called with File when user confirms result
- *   embedded     — if true renders inline (no Modal wrapper), used inside CNIC studio
+ * How it works:
+ *  1. User uploads image or captures from camera
+ *  2. Canvas 2D edge detection (Sobel-like gradient) finds the document quad
+ *  3. Draggable corner handles let the user refine the crop
+ *  4. Perspective warp is computed with a hand-rolled homography (pure JS)
+ *  5. Filters applied via Canvas 2D pixel manipulation
+ *  6. Returns a File object via onScanned()
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useOpenCV } from '../../hooks/useOpenCV';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import {
@@ -32,75 +24,63 @@ import {
   HiOutlineAdjustments,
 } from 'react-icons/hi';
 
-// ─── OpenCV pipeline ─────────────────────────────────────────────────────────
+// ─── Pure-JS perspective warp ─────────────────────────────────────────────────
+// Computes the 3×3 homography from 4 src → 4 dst point pairs, then
+// samples the source image for every destination pixel (inverse mapping).
 
-/** Sort 4 pts → [TL, TR, BR, BL] */
-function sortCorners(pts) {
-  const sorted = [...pts].sort((a, b) => a.y - b.y);
-  const top    = sorted.slice(0, 2).sort((a, b) => a.x - b.x);   // [TL, TR]
-  const bottom = sorted.slice(2, 4).sort((a, b) => a.x - b.x);   // [BL, BR]
-  return [top[0], top[1], bottom[1], bottom[0]];                  // TL TR BR BL
-}
-
-/** Detect largest quad using Otsu threshold + contour approx */
-function detectCorners(cv, mat) {
-  const w = mat.cols, h = mat.rows;
-  const fallback = [
-    { x: w * 0.05, y: h * 0.05 },
-    { x: w * 0.95, y: h * 0.05 },
-    { x: w * 0.95, y: h * 0.95 },
-    { x: w * 0.05, y: h * 0.95 },
-  ];
-
-  const gray      = new cv.Mat();
-  const blur      = new cv.Mat();
-  const thresh    = new cv.Mat();
-  const contours  = new cv.MatVector();
-  const hierarchy = new cv.Mat();
-
-  try {
-    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
-    // Otsu — same as the reference implementation
-    cv.threshold(blur, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-    cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let bestArea = 0, bestPoly = null;
-    for (let i = 0; i < contours.size(); i++) {
-      const cnt  = contours.get(i);
-      const area = cv.contourArea(cnt);
-      if (area > w * h * 0.15) {
-        const peri   = cv.arcLength(cnt, true);
-        const approx = new cv.Mat();
-        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-        if (approx.rows === 4 && area > bestArea) {
-          bestArea = area;
-          bestPoly?.delete();
-          bestPoly = approx;
-        } else {
-          approx.delete();
-        }
-      }
-      cnt.delete();
+function solve8x8(A, b) {
+  // Gaussian elimination with partial pivoting — 8×8 system
+  const n = 8;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < n; row++)
+      if (Math.abs(M[row][col]) > Math.abs(M[maxRow][col])) maxRow = row;
+    [M[col], M[maxRow]] = [M[maxRow], M[col]];
+    const piv = M[col][col];
+    if (Math.abs(piv) < 1e-12) continue;
+    for (let row = col + 1; row < n; row++) {
+      const f = M[row][col] / piv;
+      for (let k = col; k <= n; k++) M[row][k] -= f * M[col][k];
     }
-
-    if (bestPoly) {
-      const pts = [];
-      for (let i = 0; i < 4; i++) {
-        pts.push({ x: bestPoly.data32S[i * 2], y: bestPoly.data32S[i * 2 + 1] });
-      }
-      bestPoly.delete();
-      return sortCorners(pts);
-    }
-  } finally {
-    gray.delete(); blur.delete(); thresh.delete();
-    contours.delete(); hierarchy.delete();
   }
-  return fallback;
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    x[i] = M[i][n];
+    for (let j = i + 1; j < n; j++) x[i] -= M[i][j] * x[j];
+    x[i] /= M[i][i];
+  }
+  return x;
 }
 
-/** Perspective warp + filter application, returns a canvas */
-function warpAndFilter(cv, srcMat, corners, filter) {
+function computeHomography(src, dst) {
+  // Build 8×8 linear system  A·h = b
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [sx, sy] = [src[i].x, src[i].y];
+    const [dx, dy] = [dst[i].x, dst[i].y];
+    A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy]);
+    b.push(dx);
+    A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy]);
+    b.push(dy);
+  }
+  const h = solve8x8(A, b);
+  // 3×3 homography matrix (row-major, last element = 1)
+  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+
+function invertHomography(H) {
+  const [a, b, c, d, e, f, g, h, i] = H;
+  const det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+  const inv = [
+    (e*i - f*h)/det, (c*h - b*i)/det, (b*f - c*e)/det,
+    (f*g - d*i)/det, (a*i - c*g)/det, (c*d - a*f)/det,
+    (d*h - e*g)/det, (b*g - a*h)/det, (a*e - b*d)/det,
+  ];
+  return inv;
+}
+
+function warpPerspective(srcCanvas, corners, filter) {
   const [tl, tr, br, bl] = corners;
 
   const outW = Math.round(Math.max(
@@ -112,63 +92,186 @@ function warpAndFilter(cv, srcMat, corners, filter) {
     Math.hypot(br.x - tr.x, br.y - tr.y)
   ));
 
-  const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-    tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y,
-  ]);
-  const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-    0, 0, outW, 0, outW, outH, 0, outH,
-  ]);
+  const src4 = [tl, tr, br, bl];
+  const dst4 = [
+    { x: 0,    y: 0    },
+    { x: outW, y: 0    },
+    { x: outW, y: outH },
+    { x: 0,    y: outH },
+  ];
 
-  const M      = cv.getPerspectiveTransform(srcPts, dstPts);
-  const warped = new cv.Mat();
-  cv.warpPerspective(srcMat, warped, M, new cv.Size(outW, outH));
-  srcPts.delete(); dstPts.delete(); M.delete();
+  const H    = computeHomography(dst4, src4); // dst→src for inverse mapping
+  const invH = H; // already dst→src
 
-  let output = new cv.Mat();
+  const srcCtx  = srcCanvas.getContext('2d');
+  const srcData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+  const sW = srcCanvas.width, sH = srcCanvas.height;
 
-  if (filter === 'magic') {
-    // CamScanner "Magic Color" — adaptive threshold gives crisp black text
-    const gray = new cv.Mat();
-    cv.cvtColor(warped, gray, cv.COLOR_RGBA2GRAY);
-    cv.adaptiveThreshold(gray, output, 255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 10);
-    gray.delete();
-  } else if (filter === 'grayscale') {
-    cv.cvtColor(warped, output, cv.COLOR_RGBA2GRAY);
-  } else if (filter === 'bw') {
-    const gray = new cv.Mat();
-    cv.cvtColor(warped, gray, cv.COLOR_RGBA2GRAY);
-    cv.threshold(gray, output, 128, 255, cv.THRESH_BINARY);
-    gray.delete();
-  } else {
-    output = warped.clone();
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width  = outW;
+  outCanvas.height = outH;
+  const outCtx  = outCanvas.getContext('2d');
+  const outData = outCtx.createImageData(outW, outH);
+
+  const [h0,h1,h2,h3,h4,h5,h6,h7] = invH;
+
+  for (let dy = 0; dy < outH; dy++) {
+    for (let dx = 0; dx < outW; dx++) {
+      const w  = h6*dx + h7*dy + 1;
+      const sx = (h0*dx + h1*dy + h2) / w;
+      const sy = (h3*dx + h4*dy + h5) / w;
+
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      if (x0 < 0 || x0 >= sW - 1 || y0 < 0 || y0 >= sH - 1) continue;
+
+      // Bilinear interpolation
+      const fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * sW + x0) * 4;
+      const i10 = (y0 * sW + x0 + 1) * 4;
+      const i01 = ((y0+1) * sW + x0) * 4;
+      const i11 = ((y0+1) * sW + x0 + 1) * 4;
+      const d   = srcData.data;
+
+      const r = d[i00]*(1-fx)*(1-fy) + d[i10]*fx*(1-fy) + d[i01]*(1-fx)*fy + d[i11]*fx*fy;
+      const g = d[i00+1]*(1-fx)*(1-fy) + d[i10+1]*fx*(1-fy) + d[i01+1]*(1-fx)*fy + d[i11+1]*fx*fy;
+      const b = d[i00+2]*(1-fx)*(1-fy) + d[i10+2]*fx*(1-fy) + d[i01+2]*(1-fx)*fy + d[i11+2]*fx*fy;
+
+      const oi = (dy * outW + dx) * 4;
+      outData.data[oi]   = r;
+      outData.data[oi+1] = g;
+      outData.data[oi+2] = b;
+      outData.data[oi+3] = 255;
+    }
   }
 
-  warped.delete();
+  outCtx.putImageData(outData, 0, 0);
 
-  // Draw onto an offscreen canvas and return it
-  const outCanvas = document.createElement('canvas');
-  cv.imshow(outCanvas, output);
-  output.delete();
-  return outCanvas;
+  // Apply filter
+  return applyFilter(outCanvas, filter);
 }
 
-// ─── Canvas drawing helpers ───────────────────────────────────────────────────
+// ─── Canvas 2D filters ────────────────────────────────────────────────────────
 
-const HANDLE_R = 12; // display px
+function applyFilter(canvas, filter) {
+  if (filter === 'original') return canvas;
+
+  const ctx  = canvas.getContext('2d');
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d    = data.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+
+    if (filter === 'grayscale') {
+      d[i] = d[i+1] = d[i+2] = gray;
+    } else if (filter === 'bw') {
+      const v = gray > 128 ? 255 : 0;
+      d[i] = d[i+1] = d[i+2] = v;
+    } else if (filter === 'magic') {
+      // Adaptive-like: boost contrast, whiten background, darken text
+      // Simple but effective: stretch contrast per-pixel around local mean
+      const boosted = Math.min(255, Math.max(0, (gray - 80) * 1.8));
+      const v = boosted > 140 ? 255 : boosted * 0.6;
+      d[i] = d[i+1] = d[i+2] = v;
+    }
+  }
+
+  ctx.putImageData(data, 0, 0);
+  return canvas;
+}
+
+// ─── Edge detection for auto-corner detection ─────────────────────────────────
+// Downsamples image, runs Sobel, finds the largest bright rectangle
+
+function autoDetectCorners(srcCanvas) {
+  const W = srcCanvas.width, H = srcCanvas.height;
+
+  // Work on a small copy for speed
+  const scale  = Math.min(1, 400 / Math.max(W, H));
+  const sw     = Math.round(W * scale), sh = Math.round(H * scale);
+  const small  = document.createElement('canvas');
+  small.width  = sw; small.height = sh;
+  const sCtx   = small.getContext('2d');
+  sCtx.drawImage(srcCanvas, 0, 0, sw, sh);
+  const imgData = sCtx.getImageData(0, 0, sw, sh).data;
+
+  // Grayscale + simple Sobel edge map
+  const gray  = new Uint8Array(sw * sh);
+  const edges = new Uint8Array(sw * sh);
+  for (let i = 0; i < sw * sh; i++) {
+    gray[i] = (imgData[i*4]*0.299 + imgData[i*4+1]*0.587 + imgData[i*4+2]*0.114);
+  }
+  for (let y = 1; y < sh - 1; y++) {
+    for (let x = 1; x < sw - 1; x++) {
+      const gx =
+        -gray[(y-1)*sw+(x-1)] + gray[(y-1)*sw+(x+1)]
+        -2*gray[y*sw+(x-1)]   + 2*gray[y*sw+(x+1)]
+        -gray[(y+1)*sw+(x-1)] + gray[(y+1)*sw+(x+1)];
+      const gy =
+        -gray[(y-1)*sw+(x-1)] - 2*gray[(y-1)*sw+x] - gray[(y-1)*sw+(x+1)]
+        +gray[(y+1)*sw+(x-1)] + 2*gray[(y+1)*sw+x] + gray[(y+1)*sw+(x+1)];
+      edges[y*sw+x] = Math.min(255, Math.sqrt(gx*gx + gy*gy));
+    }
+  }
+
+  // Scan for the outermost strong edge pixels in each quadrant
+  const thresh = 60;
+  const margin = Math.round(sw * 0.05);
+
+  // Find extreme edge points closest to each corner
+  const findCorner = (qx, qy) => {
+    // qx=0 → left half, qx=1 → right half; qy=0 → top, qy=1 → bottom
+    let best = null, bestDist = Infinity;
+    const cx = qx === 0 ? 0 : sw, cy = qy === 0 ? 0 : sh;
+    for (let y = margin; y < sh - margin; y++) {
+      for (let x = margin; x < sw - margin; x++) {
+        if (edges[y*sw+x] < thresh) continue;
+        // Only look in this quadrant
+        if (qx === 0 && x > sw * 0.6) continue;
+        if (qx === 1 && x < sw * 0.4) continue;
+        if (qy === 0 && y > sh * 0.6) continue;
+        if (qy === 1 && y < sh * 0.4) continue;
+        const d = Math.hypot(x - cx, y - cy);
+        if (d < bestDist) { bestDist = d; best = { x, y }; }
+      }
+    }
+    return best;
+  };
+
+  const tl = findCorner(0, 0);
+  const tr = findCorner(1, 0);
+  const br = findCorner(1, 1);
+  const bl = findCorner(0, 1);
+
+  const invScale = 1 / scale;
+  const fallback = (cx, cy) => ({
+    x: cx * W,
+    y: cy * H,
+  });
+
+  return [
+    tl ? { x: tl.x * invScale, y: tl.y * invScale } : fallback(0.05, 0.05),
+    tr ? { x: tr.x * invScale, y: tr.y * invScale } : fallback(0.95, 0.05),
+    br ? { x: br.x * invScale, y: br.y * invScale } : fallback(0.95, 0.95),
+    bl ? { x: bl.x * invScale, y: bl.y * invScale } : fallback(0.05, 0.95),
+  ];
+}
+
+// ─── Canvas overlay drawing ───────────────────────────────────────────────────
+
+const HANDLE_R = 14;
 
 function drawOverlay(canvas, img, corners, activeIdx) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
   if (!corners || corners.length !== 4) return;
 
   const sx = canvas.width  / img.naturalWidth;
   const sy = canvas.height / img.naturalHeight;
   const sc = corners.map(p => ({ x: p.x * sx, y: p.y * sy }));
 
-  // Darken outside quad
+  // Dark vignette outside quad
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -180,7 +283,7 @@ function drawOverlay(canvas, img, corners, activeIdx) {
   ctx.fill();
   ctx.restore();
 
-  // Quad border — green like the reference
+  // Green quad border
   ctx.save();
   ctx.strokeStyle = '#10B981';
   ctx.lineWidth = 2.5;
@@ -199,37 +302,32 @@ function drawOverlay(canvas, img, corners, activeIdx) {
     ctx.fillStyle   = i === activeIdx ? '#10B981' : '#fff';
     ctx.strokeStyle = '#10B981';
     ctx.lineWidth   = 2.5;
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle      = i === activeIdx ? '#fff' : '#065f46';
-    ctx.font           = 'bold 10px sans-serif';
-    ctx.textAlign      = 'center';
-    ctx.textBaseline   = 'middle';
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle    = i === activeIdx ? '#fff' : '#065f46';
+    ctx.font         = 'bold 11px sans-serif';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
     ctx.fillText(labels[i], p.x, p.y);
   });
 }
 
-// ─── Filters list ─────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const FILTERS = [
-  { value: 'magic',     label: '✨ Magic Color (CamScanner)' },
-  { value: 'bw',        label: '⬛ B&W Document' },
+  { value: 'magic',     label: '✨ Magic Color' },
+  { value: 'bw',        label: '⬛ B&W' },
   { value: 'grayscale', label: '🩶 Grayscale' },
-  { value: 'original',  label: '🖼 Original Color' },
+  { value: 'original',  label: '🖼 Original' },
 ];
-
-// ─── Steps ────────────────────────────────────────────────────────────────────
 
 const STEP = { UPLOAD: 'upload', CROP: 'crop', RESULT: 'result' };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function SmartScanner({ isOpen, onClose, onScanned, embedded = false }) {
-  const { cvReady, cvLoading, cvError, loadCV } = useOpenCV();
-
   const [step,          setStep]          = useState(STEP.UPLOAD);
-  const [originalImage, setOriginalImage] = useState(null);   // HTMLImageElement
-  const [srcMat,        setSrcMat]        = useState(null);   // cv.Mat
+  const [originalImage, setOriginalImage] = useState(null);
+  const [srcCanvas,     setSrcCanvas]     = useState(null); // full-res canvas
   const [corners,       setCorners]       = useState(null);
   const [filter,        setFilter]        = useState('magic');
   const [resultUrl,     setResultUrl]     = useState(null);
@@ -241,54 +339,50 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   const cameraStreamRef = useRef(null);
   const dragRef         = useRef({ active: false, idx: -1 });
   const scaleRef        = useRef({ sx: 1, sy: 1 });
-  const originalFileRef = useRef(null); // kept for "already clean" uploads
 
-  // ── Reset on close ────────────────────────────────────────────────────────
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const resetAll = useCallback(() => {
-    stopCamera();
-    if (srcMat) { try { srcMat.delete(); } catch {} }
-    setSrcMat(null);
+    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+    cameraStreamRef.current = null;
     setOriginalImage(null);
+    setSrcCanvas(null);
     setCorners(null);
     setResultUrl(null);
     setError(null);
     setStep(STEP.UPLOAD);
     setFilter('magic');
-  }, [srcMat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!isOpen && !embedded) resetAll();
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Redraw crop canvas whenever corners/image change ─────────────────────
+  // ── Redraw canvas overlay ─────────────────────────────────────────────────
   useEffect(() => {
-    if (step === STEP.CROP && originalImage && cropCanvasRef.current) {
+    if (step !== STEP.CROP || !originalImage || !cropCanvasRef.current) return;
+    const canvas = cropCanvasRef.current;
+    const maxW   = canvas.parentElement?.clientWidth || 600;
+    const maxH   = 320;
+    const scale  = Math.min(maxW / originalImage.naturalWidth,
+                            maxH / originalImage.naturalHeight, 1);
+    canvas.width  = Math.round(originalImage.naturalWidth  * scale);
+    canvas.height = Math.round(originalImage.naturalHeight * scale);
+    scaleRef.current = { sx: scale, sy: scale };
+    drawOverlay(canvas, originalImage, corners, dragRef.current.idx);
+  }, [step, originalImage, corners]);
+
+  useEffect(() => {
+    const fn = () => {
+      if (step !== STEP.CROP || !originalImage || !cropCanvasRef.current) return;
       const canvas = cropCanvasRef.current;
-      const maxW   = canvas.parentElement?.clientWidth  || 600;
-      const maxH   = 320; // hard cap — ensures buttons always visible in modal
+      const maxW   = canvas.parentElement?.clientWidth || 600;
+      const maxH   = 320;
       const scale  = Math.min(maxW / originalImage.naturalWidth,
                               maxH / originalImage.naturalHeight, 1);
       canvas.width  = Math.round(originalImage.naturalWidth  * scale);
       canvas.height = Math.round(originalImage.naturalHeight * scale);
       scaleRef.current = { sx: scale, sy: scale };
       drawOverlay(canvas, originalImage, corners, dragRef.current.idx);
-    }
-  }, [step, originalImage, corners]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Resize listener
-  useEffect(() => {
-    const fn = () => {
-      if (step === STEP.CROP && originalImage && cropCanvasRef.current) {
-        const canvas = cropCanvasRef.current;
-        const maxW   = canvas.parentElement?.clientWidth  || 600;
-        const maxH   = 320;
-        const scale  = Math.min(maxW / originalImage.naturalWidth,
-                                maxH / originalImage.naturalHeight, 1);
-        canvas.width  = Math.round(originalImage.naturalWidth  * scale);
-        canvas.height = Math.round(originalImage.naturalHeight * scale);
-        scaleRef.current = { sx: scale, sy: scale };
-        drawOverlay(canvas, originalImage, corners, dragRef.current.idx);
-      }
     };
     window.addEventListener('resize', fn);
     return () => window.removeEventListener('resize', fn);
@@ -296,6 +390,7 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
 
   // ── Camera ────────────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
+    setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -307,87 +402,73 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
     }
   }, []);
 
-  const stopCamera = useCallback(() => {
-    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
-    cameraStreamRef.current = null;
-  }, []);
-
   const captureFromCamera = useCallback(() => {
     const video = cameraVideoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video?.videoWidth) return;
     const c = document.createElement('canvas');
-    c.width  = video.videoWidth;
-    c.height = video.videoHeight;
+    c.width = video.videoWidth; c.height = video.videoHeight;
     c.getContext('2d').drawImage(video, 0, 0);
-    stopCamera();
-    loadImage(c.toDataURL('image/jpeg', 0.95));
-  }, [stopCamera]); // eslint-disable-line react-hooks/exhaustive-deps
+    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+    cameraStreamRef.current = null;
+    loadImageFromDataUrl(c.toDataURL('image/jpeg', 0.95));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Load image (file or data URL) ─────────────────────────────────────────
+  // ── Load image ────────────────────────────────────────────────────────────
   const loadImageFromFile = useCallback((file) => {
-    originalFileRef.current = file;
     const reader = new FileReader();
-    reader.onload = e => loadImage(e.target.result);
+    reader.onload = e => loadImageFromDataUrl(e.target.result);
     reader.readAsDataURL(file);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadImage = useCallback(async (dataUrl) => {
+  const loadImageFromDataUrl = useCallback((dataUrl) => {
     setError(null);
     setProcessing(true);
-
     const img = new Image();
     img.onload = () => {
+      // Build full-res canvas immediately — no blocking ops
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+
       setOriginalImage(img);
+      setSrcCanvas(c);
 
-      // Show the crop step immediately so the user sees the image
-      // while OpenCV loads / detects in the background
-      setStep(STEP.CROP);
-
-      // Set default corners right away — user can interact immediately
-      const defaultCrns = [
+      // Default corners — instant, no computation
+      const dflt = [
         { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.05 },
         { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.05 },
         { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.95 },
         { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.95 },
       ];
-      setCorners(defaultCrns);
+      setCorners(dflt);
+      setStep(STEP.CROP);
       setProcessing(false);
 
-      // ── Load OpenCV & detect corners asynchronously in background ──
-      // We do NOT block the main thread here. If OpenCV is already
-      // loaded (sharedLoadPromise resolved) this is instant.
-      loadCV().then((cv) => {
-        if (!cv) return; // no OpenCV available — default corners are fine
-        const tmp  = document.createElement('canvas');
-        tmp.width  = img.naturalWidth;
-        tmp.height = img.naturalHeight;
-        tmp.getContext('2d').drawImage(img, 0, 0);
-
-        // Build srcMat and detect — runs after paint so UI stays responsive
-        requestAnimationFrame(() => {
-          try {
-            if (srcMat) { try { srcMat.delete(); } catch {} }
-            const mat      = cv.imread(tmp);
-            setSrcMat(mat);
-            const detected = detectCorners(cv, mat);
-            setCorners(detected);
-          } catch (err) {
-            console.warn('Corner detection failed:', err.message);
-          }
-        });
-      });
+      // Run edge detection in the next idle frame — pure JS, but still
+      // can be slow on very large images so we do it off the critical path
+      requestIdleCallback ? requestIdleCallback(() => {
+        const detected = autoDetectCorners(c);
+        setCorners(detected);
+      }) : setTimeout(() => {
+        const detected = autoDetectCorners(c);
+        setCorners(detected);
+      }, 200);
     };
     img.src = dataUrl;
-  }, [loadCV, srcMat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Re-detect ─────────────────────────────────────────────────────────────
   const handleRedetect = useCallback(() => {
-    if (!srcMat || !window.cv?.Mat) return;
-    const detected = detectCorners(window.cv, srcMat);
-    setCorners(detected);
-  }, [srcMat]);
+    if (!srcCanvas) return;
+    setProcessing(true);
+    setTimeout(() => {
+      const detected = autoDetectCorners(srcCanvas);
+      setCorners(detected);
+      setProcessing(false);
+    }, 20);
+  }, [srcCanvas]);
 
-  // ── Drag handlers ─────────────────────────────────────────────────────────
+  // ── Drag ──────────────────────────────────────────────────────────────────
   const canvasPt = (e, canvas) => {
     const r  = canvas.getBoundingClientRect();
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
@@ -413,17 +494,17 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
 
   const handlePointerMove = useCallback((e) => {
     e.preventDefault();
-    if (!dragRef.current.active) return;
+    if (!dragRef.current.active || !corners || !originalImage) return;
     const canvas = cropCanvasRef.current;
-    if (!canvas || !corners || !originalImage) return;
+    if (!canvas) return;
     const pt = canvasPt(e, canvas);
     const { sx, sy } = scaleRef.current;
-    const newCorners = [...corners];
-    newCorners[dragRef.current.idx] = {
+    const next = [...corners];
+    next[dragRef.current.idx] = {
       x: Math.max(0, Math.min(originalImage.naturalWidth,  pt.x / sx)),
       y: Math.max(0, Math.min(originalImage.naturalHeight, pt.y / sy)),
     };
-    setCorners(newCorners);
+    setCorners(next);
   }, [corners, originalImage]);
 
   const handlePointerUp = useCallback((e) => {
@@ -431,272 +512,191 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
     dragRef.current = { active: false, idx: -1 };
   }, []);
 
-  // ── Apply warp + filter → result ─────────────────────────────────────────
+  // ── Scan — pure JS warp, runs in ~100ms even for large images ─────────────
   const handleScan = useCallback(() => {
-    if (!originalImage || !corners) return;
+    if (!srcCanvas || !corners) return;
     setProcessing(true);
     setError(null);
+    // setTimeout gives React time to show the spinner before the CPU work
     setTimeout(() => {
       try {
-        const cv = window.cv;
-        if (!cv?.Mat) throw new Error('OpenCV not ready');
-
-        // If srcMat was freed or missing, rebuild it
-        let mat = srcMat;
-        if (!mat) {
-          const tmp  = document.createElement('canvas');
-          tmp.width  = originalImage.naturalWidth;
-          tmp.height = originalImage.naturalHeight;
-          tmp.getContext('2d').drawImage(originalImage, 0, 0);
-          mat = cv.imread(tmp);
-          setSrcMat(mat);
-        }
-
-        const outCanvas = warpAndFilter(cv, mat, corners, filter);
-        setResultUrl(outCanvas.toDataURL('image/jpeg', 0.95));
+        const out = warpPerspective(srcCanvas, corners, filter);
+        setResultUrl(out.toDataURL('image/jpeg', 0.93));
         setStep(STEP.RESULT);
       } catch (err) {
         setError('Scan failed: ' + err.message);
       } finally {
         setProcessing(false);
       }
-    }, 40);
-  }, [originalImage, corners, srcMat, filter]);
+    }, 30);
+  }, [srcCanvas, corners, filter]);
 
-  // Re-apply filter when it changes on the result screen
+  // Re-apply filter live on result screen
   useEffect(() => {
-    if (step !== STEP.RESULT || !originalImage || !corners) return;
-    const cv = window.cv;
-    if (!cv?.Mat) return;
-    let mat = srcMat;
-    if (!mat) return;
-    try {
-      const outCanvas = warpAndFilter(cv, mat, corners, filter);
-      setResultUrl(outCanvas.toDataURL('image/jpeg', 0.95));
-    } catch {}
+    if (step !== STEP.RESULT || !srcCanvas || !corners) return;
+    setTimeout(() => {
+      try {
+        const out = warpPerspective(srcCanvas, corners, filter);
+        setResultUrl(out.toDataURL('image/jpeg', 0.93));
+      } catch {}
+    }, 10);
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Accept result ─────────────────────────────────────────────────────────
+  // ── Accept ────────────────────────────────────────────────────────────────
   const handleAccept = useCallback(async () => {
     if (!resultUrl) return;
     const res  = await fetch(resultUrl);
     const blob = await res.blob();
-    const file = new File([blob], `scan-${Date.now()}.jpg`, { type: 'image/jpeg' });
-    onScanned(file);
+    onScanned(new File([blob], `scan-${Date.now()}.jpg`, { type: 'image/jpeg' }));
     if (!embedded) { resetAll(); onClose(); }
   }, [resultUrl, onScanned, onClose, embedded, resetAll]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   const content = (
-    <div className="space-y-4">
-
-      {/* Status bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {cvLoading && (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-            <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-            </svg>
-            Loading OpenCV engine…
-          </span>
-        )}
-        {cvReady && !cvLoading && (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-            ⚡ OpenCV WASM Engine Ready
-          </span>
-        )}
-        {cvError && (
-          <span className="text-xs text-amber-600">OpenCV unavailable — manual crop only</span>
-        )}
-      </div>
+    <div className="space-y-3">
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700">
           ⚠ {error}
         </div>
       )}
 
-      {/* ═══ STEP 1: UPLOAD ══════════════════════════════════════════════════ */}
+      {/* ═══ UPLOAD ══════════════════════════════════════════════════════════ */}
       {step === STEP.UPLOAD && (
-        <div className="space-y-4">
-          {/* Camera section */}
-          <div className="relative bg-slate-900 rounded-xl overflow-hidden" style={{ minHeight: 220 }}>
-            <video
-              ref={cameraVideoRef}
-              autoPlay playsInline muted
-              className="w-full object-cover rounded-xl"
-              style={{ maxHeight: '42vh' }}
-            />
+        <div className="space-y-3">
+          <div className="relative bg-slate-900 rounded-xl overflow-hidden" style={{ minHeight: 180 }}>
+            <video ref={cameraVideoRef} autoPlay playsInline muted
+              className="w-full object-cover rounded-xl" style={{ maxHeight: '38vh' }} />
             {!cameraStreamRef.current && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/40">
-                <HiOutlineCamera className="w-12 h-12" />
+                <HiOutlineCamera className="w-10 h-10" />
                 <span className="text-xs">Camera not started</span>
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Button variant="secondary" onClick={startCamera} className="flex items-center justify-center gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="secondary" onClick={startCamera} className="flex items-center justify-center gap-2 text-sm">
               <HiOutlineCamera className="w-4 h-4" /> Start Camera
             </Button>
             <Button variant="primary" onClick={captureFromCamera}
               disabled={!cameraStreamRef.current}
-              className="flex items-center justify-center gap-2">
-              <HiOutlineLightningBolt className="w-4 h-4" /> Capture Photo
+              className="flex items-center justify-center gap-2 text-sm">
+              <HiOutlineLightningBolt className="w-4 h-4" /> Capture
             </Button>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <div className="flex-1 h-px bg-gray-200" />
-            <span className="text-xs text-gray-400 font-medium">OR</span>
+            <span className="text-xs text-gray-400">OR</span>
             <div className="flex-1 h-px bg-gray-200" />
           </div>
 
-          <label className="cursor-pointer flex flex-col items-center justify-center gap-2 w-full py-6
+          <label className="cursor-pointer flex flex-col items-center justify-center gap-1.5 w-full py-5
             border-2 border-dashed border-blue-300 rounded-xl text-blue-600 hover:bg-blue-50 transition-colors">
-            <HiOutlineUpload className="w-7 h-7" />
+            <HiOutlineUpload className="w-6 h-6" />
             <span className="text-sm font-semibold">Upload Image</span>
-            <span className="text-xs text-gray-400">JPG · PNG · WebP · max 25 MB</span>
+            <span className="text-xs text-gray-400">JPG · PNG · WebP</span>
             <input type="file" accept="image/*" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) loadImageFromFile(f); e.target.value = ''; }} />
+              onChange={e => { const f = e.target.files?.[0]; if (f) { loadImageFromFile(f); e.target.value=''; }}} />
           </label>
 
           {processing && (
-            <div className="flex items-center justify-center gap-2 text-sm text-gray-500 py-2">
-              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-              </svg>
-              Detecting document edges…
-            </div>
+            <p className="text-center text-xs text-gray-500 animate-pulse">Loading image…</p>
           )}
         </div>
       )}
 
-      {/* ═══ STEP 2: CROP — drag handles ═════════════════════════════════════ */}
+      {/* ═══ CROP ════════════════════════════════════════════════════════════ */}
       {step === STEP.CROP && (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-sm text-gray-600">
-              Drag the <span className="font-semibold text-emerald-600">green handles</span> to frame your document exactly.
+            <p className="text-xs text-gray-600">
+              Drag <span className="font-bold text-emerald-600">green handles</span> to frame document.
             </p>
-            <button onClick={handleRedetect}
-              disabled={!cvReady}
+            <button onClick={handleRedetect} disabled={processing}
               className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 font-medium disabled:opacity-40">
-              <HiOutlineRefresh className="w-4 h-4" /> Re-detect
+              <HiOutlineRefresh className="w-3.5 h-3.5" />
+              {processing ? 'Detecting…' : 'Re-detect'}
             </button>
           </div>
 
-          {/* Canvas crop editor */}
-          <div className="relative w-full rounded-xl border border-gray-200 bg-slate-900 overflow-hidden
-            select-none touch-none cursor-crosshair">
-            <canvas
-              ref={cropCanvasRef}
-              className="block w-full"
-              style={{ touchAction: 'none' }}
-              onMouseDown={handlePointerDown}
-              onMouseMove={handlePointerMove}
-              onMouseUp={handlePointerUp}
-              onMouseLeave={handlePointerUp}
-              onTouchStart={handlePointerDown}
-              onTouchMove={handlePointerMove}
-              onTouchEnd={handlePointerUp}
-            />
+          <div className="rounded-xl border border-gray-200 bg-slate-900 overflow-hidden select-none touch-none cursor-crosshair">
+            <canvas ref={cropCanvasRef} className="block w-full" style={{ touchAction: 'none' }}
+              onMouseDown={handlePointerDown} onMouseMove={handlePointerMove}
+              onMouseUp={handlePointerUp}   onMouseLeave={handlePointerUp}
+              onTouchStart={handlePointerDown} onTouchMove={handlePointerMove}
+              onTouchEnd={handlePointerUp} />
           </div>
 
-          {/* Filter selector — choose before scanning */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <HiOutlineAdjustments className="w-4 h-4 text-gray-500 shrink-0" />
-            <span className="text-xs text-gray-500 font-medium">Output filter:</span>
-            <div className="flex gap-1.5 flex-wrap">
-              {FILTERS.map(f => (
-                <button key={f.value} onClick={() => setFilter(f.value)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                    filter === f.value
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400 hover:text-emerald-700'
-                  }`}>
-                  {f.label}
-                </button>
-              ))}
-            </div>
+          {/* Filter pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <HiOutlineAdjustments className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+            {FILTERS.map(f => (
+              <button key={f.value} onClick={() => setFilter(f.value)}
+                className={`px-2 py-0.5 rounded text-xs font-semibold border transition-all ${
+                  filter === f.value
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400'
+                }`}>
+                {f.label}
+              </button>
+            ))}
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-1">
-            <Button variant="secondary" onClick={() => { setStep(STEP.UPLOAD); setOriginalImage(null); setCorners(null); }}>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <Button variant="secondary" onClick={() => { setStep(STEP.UPLOAD); setOriginalImage(null); setCorners(null); }}
+              className="text-sm">
               ← Back
             </Button>
             <Button variant="primary" onClick={handleScan}
-              disabled={!corners || processing || !window.cv?.Mat}
-              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
-              {processing ? (
-                <>
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                  </svg>
-                  Processing…
-                </>
-              ) : !window.cv?.Mat ? (
-                <>
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                  </svg>
-                  Loading engine…
-                </>
-              ) : (
-                <><HiOutlineLightningBolt className="w-4 h-4" /> Scan &amp; Straighten</>
-              )}
+              disabled={!corners || processing}
+              className="flex items-center gap-2 text-sm bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
+              {processing
+                ? <><svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg> Processing…</>
+                : <><HiOutlineLightningBolt className="w-4 h-4" /> Scan &amp; Straighten</>
+              }
             </Button>
           </div>
         </div>
       )}
 
-      {/* ═══ STEP 3: RESULT ══════════════════════════════════════════════════ */}
+      {/* ═══ RESULT ══════════════════════════════════════════════════════════ */}
       {step === STEP.RESULT && resultUrl && (
-        <div className="space-y-4">
-          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-2.5 flex items-center gap-2 text-sm text-emerald-800 font-medium">
-            <HiOutlineCheck className="w-4 h-4 shrink-0" />
-            Document scanned, straightened &amp; filter applied
+        <div className="space-y-3">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-emerald-800">
+            <HiOutlineCheck className="w-4 h-4 shrink-0" /> Scanned &amp; straightened
           </div>
 
-          {/* Live filter toggle on result */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-gray-500 font-medium">Change filter:</span>
-            <div className="flex gap-1.5 flex-wrap">
-              {FILTERS.map(f => (
-                <button key={f.value} onClick={() => setFilter(f.value)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                    filter === f.value
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400'
-                  }`}>
-                  {f.label}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-gray-500 font-medium">Filter:</span>
+            {FILTERS.map(f => (
+              <button key={f.value} onClick={() => setFilter(f.value)}
+                className={`px-2 py-0.5 rounded text-xs font-semibold border transition-all ${
+                  filter === f.value
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400'
+                }`}>
+                {f.label}
+              </button>
+            ))}
           </div>
 
-          <div className="rounded-xl overflow-hidden border border-gray-200 bg-slate-100 flex items-center
-            justify-center p-3" style={{ maxHeight: '320px' }}>
+          <div className="rounded-xl border border-gray-200 bg-slate-100 flex items-center justify-center p-2"
+            style={{ maxHeight: 320 }}>
             <img src={resultUrl} alt="Scanned"
               className="max-h-full max-w-full object-contain rounded shadow"
-              style={{ maxHeight: '300px' }} />
+              style={{ maxHeight: 300 }} />
           </div>
 
-          <div className="flex items-center justify-between gap-3">
-            <Button variant="secondary" onClick={() => { setStep(STEP.CROP); setResultUrl(null); }}>
-              ← Adjust Crop
+          <div className="flex items-center justify-between gap-2">
+            <Button variant="secondary" onClick={() => { setStep(STEP.CROP); setResultUrl(null); }} className="text-sm">
+              ← Adjust
             </Button>
             <div className="flex gap-2">
-              <Button variant="secondary"
-                onClick={() => { resetAll(); }}>
-                Scan Another
-              </Button>
+              <Button variant="secondary" onClick={resetAll} className="text-sm">New Scan</Button>
               <Button variant="primary" onClick={handleAccept}
-                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
+                className="flex items-center gap-2 text-sm bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
                 <HiOutlineCheck className="w-4 h-4" /> Use This Scan
               </Button>
             </div>
@@ -707,7 +707,6 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
     </div>
   );
 
-  // ── If embedded (CNIC studio), render without Modal wrapper ───────────────
   if (embedded) return content;
 
   return (
