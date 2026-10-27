@@ -140,16 +140,27 @@ export function enhanceCanvas2D(sourceCanvas, options = {}) {
       data[i + 2] = lum;
     }
   } else if (filter === 'magic') {
-    // Magic color: boosts contrast, cleans dark gray paper background slightly
-    const magicFactor = factor * 1.25;
+    // CamScanner Magic Color Contrast Sharpener
+    // Brightens paper background and enriches text/ink lines
     for (let i = 0; i < len; i += 4) {
-      let r = magicFactor * (data[i] - 128) + 128 + brightOffset + 10;
-      let g = magicFactor * (data[i + 1] - 128) + 128 + brightOffset + 10;
-      let b = magicFactor * (data[i + 2] - 128) + 128 + brightOffset + 10;
+      let r = data[i];
+      let g = data[i + 1];
+      let b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-      data[i] = Math.max(0, Math.min(255, r));
-      data[i + 1] = Math.max(0, Math.min(255, g));
-      data[i + 2] = Math.max(0, Math.min(255, b));
+      if (lum > 115) {
+        r = Math.min(255, r * 1.25 + 12 + brightOffset);
+        g = Math.min(255, g * 1.25 + 12 + brightOffset);
+        b = Math.min(255, b * 1.25 + 12 + brightOffset);
+      } else {
+        r = Math.max(0, r * 0.72);
+        g = Math.max(0, g * 0.72);
+        b = Math.max(0, b * 0.72);
+      }
+
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
     }
   } else {
     // 'color' mode: adjust brightness/contrast if non-zero

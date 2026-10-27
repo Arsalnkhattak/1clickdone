@@ -43,6 +43,7 @@ export async function createDocumentPageFromFile(file, cv = null) {
     corners: detection.corners,
     detectionConfidence: detection.confidence,
     isCropped: detection.detected, // If confident quad was found, mark cropped
+    preset: 'auto',                // 'auto', 'a4', 'cnic', 'receipt'
     rotation: 0,                   // 0, 90, 180, 270
     straightenAngle: 0,            // -25 to +25 degrees
     filter: 'color',               // 'color', 'grayscale', 'bw', 'magic'
@@ -98,7 +99,7 @@ export async function renderDocumentPage(page, cv = null, maxDimension = 1800) {
             ? page.corners
             : page.corners.map((p) => ({ x: p.x * scale, y: p.y * scale }));
 
-          workCanvas = applyPerspectiveWarp(cv, workCanvas, scaledCorners);
+          workCanvas = applyPerspectiveWarp(cv, workCanvas, scaledCorners, page.preset || 'auto');
         }
 
         // 2. Filters, Enhancements, Rotation & Straightening

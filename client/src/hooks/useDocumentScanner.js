@@ -207,6 +207,7 @@ export function useDocumentScanner() {
   const createSnapshot = (doc) => ({
     corners: doc.corners ? doc.corners.map((p) => ({ ...p })) : null,
     isCropped: doc.isCropped,
+    preset: doc.preset || 'auto',
     rotation: doc.rotation,
     straightenAngle: doc.straightenAngle,
     filter: doc.filter,
@@ -385,6 +386,25 @@ export function useDocumentScanner() {
     toast('Document reset to original');
   }, [activeDoc, updateActiveDocument]);
 
+  /**
+   * Auto-detects top edge slant and straightens active document horizontally.
+   */
+  const autoStraightenActiveDocument = useCallback(() => {
+    if (!activeDoc || !activeDoc.corners || activeDoc.corners.length !== 4) return;
+    const [c0, c1] = activeDoc.corners;
+    const dy = c1.y - c0.y;
+    const dx = c1.x - c0.x;
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+    if (Math.abs(angleDeg) > 0.15) {
+      const correction = -Math.round(angleDeg * 10) / 10;
+      updateActiveDocument({ straightenAngle: correction });
+      toast.success(`Deskewed document by ${correction}°!`);
+    } else {
+      toast('Document top edge is already level (0°)!');
+    }
+  }, [activeDoc, updateActiveDocument]);
+
   return {
     documents,
     activeDocument: activeDoc,
@@ -407,5 +427,6 @@ export function useDocumentScanner() {
     redo,
     detectActiveCorners,
     resetActiveDocument,
+    autoStraightenActiveDocument,
   };
 }

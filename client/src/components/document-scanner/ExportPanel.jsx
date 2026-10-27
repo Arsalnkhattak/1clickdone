@@ -22,6 +22,7 @@ export default function ExportPanel({
   documents = [],
   activeDocument,
   settings,
+  onOpenOcr,
 }) {
   const [exportingPdf, setExportingPdf] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -273,6 +274,17 @@ export default function ExportPanel({
               PNG Image
             </button>
           </div>
+
+          {onOpenOcr && (
+            <button
+              type="button"
+              onClick={onOpenOcr}
+              className="mt-2 w-full px-3 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-800 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+            >
+              <HiOutlineClipboardCheck className="w-4 h-4 text-teal-600" />
+              Extract Text via OCR (English / Urdu)
+            </button>
+          )}
         </div>
       )}
 

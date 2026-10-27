@@ -1,392 +1,392 @@
 /**
- * SmartScanner — Pure JavaScript document scanner. Zero external dependencies.
+ * SmartScanner — Full CamScan Studio ported from scanner.html into React.
  *
- * No OpenCV.js, no WASM, no downloads, no page freezes.
+ * Features (identical to the HTML reference):
+ *  • Upload images (file picker + drag-drop) or capture from webcam
+ *  • 8-point interactive crop: 4 corner handles + 4 edge-midpoint handles
+ *  • Magnifying loupe while dragging
+ *  • Format presets: Auto Free / A4 Document / CNIC Card / Receipt
+ *  • Rotation: -90° / +90° + fine angle slider (−45° to +45°)
+ *  • Auto deskew (geometry-based, no OpenCV needed)
+ *  • Re-detect crop / Full Inset Box reset
+ *  • Dual-view: original with handles on left, warped output on right
+ *  • Filters: Magic Color / B&W Clean / Grayscale / Original
+ *  • Export: Download scanned image as JPEG/PNG
+ *  • Returns a File to parent via onScanned() callback
  *
- * How it works:
- *  1. User uploads image or captures from camera
- *  2. Canvas 2D edge detection (Sobel-like gradient) finds the document quad
- *  3. Draggable corner handles let the user refine the crop
- *  4. Perspective warp is computed with a hand-rolled homography (pure JS)
- *  5. Filters applied via Canvas 2D pixel manipulation
- *  6. Returns a File object via onScanned()
+ * Props:
+ *   isOpen    — controls visibility when used as a modal
+ *   onClose   — called when user cancels
+ *   onScanned — called with File object when "Use This Scan" is clicked
+ *   embedded  — if true, renders inline (no Modal wrapper)
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import {
-  HiOutlineCamera,
-  HiOutlineUpload,
-  HiOutlineLightningBolt,
-  HiOutlineRefresh,
-  HiOutlineCheck,
-  HiOutlineAdjustments,
+  HiOutlineUpload, HiOutlineCamera, HiOutlineLightningBolt,
+  HiOutlineRefresh, HiOutlineCheck, HiOutlineAdjustments,
+  HiOutlineArrowLeft, HiOutlineArrowRight, HiOutlineX,
+  HiOutlineDownload,
 } from 'react-icons/hi';
 
-// ─── Pure-JS perspective warp ─────────────────────────────────────────────────
-// Computes the 3×3 homography from 4 src → 4 dst point pairs, then
-// samples the source image for every destination pixel (inverse mapping).
+// ─── Pure-JS homography (same Gaussian elimination as scanner.html) ──────────
 
-function solve8x8(A, b) {
-  // Gaussian elimination with partial pivoting — 8×8 system
+function gaussianElimination(A, b) {
   const n = 8;
   const M = A.map((row, i) => [...row, b[i]]);
-  for (let col = 0; col < n; col++) {
-    let maxRow = col;
-    for (let row = col + 1; row < n; row++)
-      if (Math.abs(M[row][col]) > Math.abs(M[maxRow][col])) maxRow = row;
-    [M[col], M[maxRow]] = [M[maxRow], M[col]];
-    const piv = M[col][col];
-    if (Math.abs(piv) < 1e-12) continue;
-    for (let row = col + 1; row < n; row++) {
-      const f = M[row][col] / piv;
-      for (let k = col; k <= n; k++) M[row][k] -= f * M[col][k];
+  for (let i = 0; i < n; i++) {
+    let maxRow = i;
+    for (let k = i + 1; k < n; k++)
+      if (Math.abs(M[k][i]) > Math.abs(M[maxRow][i])) maxRow = k;
+    [M[i], M[maxRow]] = [M[maxRow], M[i]];
+    if (Math.abs(M[i][i]) < 1e-10) return null;
+    for (let k = i + 1; k < n; k++) {
+      const c = -M[k][i] / M[i][i];
+      for (let j = i; j <= n; j++)
+        M[k][j] = i === j ? 0 : M[k][j] + c * M[i][j];
     }
   }
   const x = new Array(n).fill(0);
   for (let i = n - 1; i >= 0; i--) {
-    x[i] = M[i][n];
-    for (let j = i + 1; j < n; j++) x[i] -= M[i][j] * x[j];
-    x[i] /= M[i][i];
+    x[i] = M[i][n] / M[i][i];
+    for (let k = i - 1; k >= 0; k--) M[k][n] -= M[k][i] * x[i];
   }
   return x;
 }
 
-function computeHomography(src, dst) {
-  // Build 8×8 linear system  A·h = b
+function solveHomography(src, dst) {
   const A = [], b = [];
   for (let i = 0; i < 4; i++) {
-    const [sx, sy] = [src[i].x, src[i].y];
-    const [dx, dy] = [dst[i].x, dst[i].y];
-    A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy]);
-    b.push(dx);
-    A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy]);
-    b.push(dy);
+    const [u, v] = [dst[i].x, dst[i].y];
+    const [x, y] = [src[i].x, src[i].y];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
   }
-  const h = solve8x8(A, b);
-  // 3×3 homography matrix (row-major, last element = 1)
-  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+  const h = gaussianElimination(A, b);
+  if (!h) return null;
+  return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]];
 }
 
-function invertHomography(H) {
-  const [a, b, c, d, e, f, g, h, i] = H;
-  const det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
-  const inv = [
-    (e*i - f*h)/det, (c*h - b*i)/det, (b*f - c*e)/det,
-    (f*g - d*i)/det, (a*i - c*g)/det, (c*d - a*f)/det,
-    (d*h - e*g)/det, (b*g - a*h)/det, (a*e - b*d)/det,
+// ─── 8 control points from corners (normalized 0-1) ──────────────────────────
+
+function get8Points(corners, w, h) {
+  const c = corners.map(p => ({ x: p.x * w, y: p.y * h }));
+  return [
+    c[0], c[1], c[2], c[3],                               // 4 corners
+    { x: (c[0].x + c[1].x) / 2, y: (c[0].y + c[1].y) / 2 }, // top-mid
+    { x: (c[1].x + c[2].x) / 2, y: (c[1].y + c[2].y) / 2 }, // right-mid
+    { x: (c[2].x + c[3].x) / 2, y: (c[2].y + c[3].y) / 2 }, // bottom-mid
+    { x: (c[3].x + c[0].x) / 2, y: (c[3].y + c[0].y) / 2 }, // left-mid
   ];
-  return inv;
 }
 
-function warpPerspective(srcCanvas, corners, filter) {
-  const [tl, tr, br, bl] = corners;
+// ─── Build rotated canvas from raw image ─────────────────────────────────────
 
-  const outW = Math.round(Math.max(
-    Math.hypot(tr.x - tl.x, tr.y - tl.y),
-    Math.hypot(br.x - bl.x, br.y - bl.y)
+function buildRotatedCanvas(img, baseDeg, fineDeg) {
+  const totalRad = ((baseDeg + fineDeg) * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(totalRad));
+  const sin = Math.abs(Math.sin(totalRad));
+  const newW = Math.round(img.width * cos + img.height * sin);
+  const newH = Math.round(img.width * sin + img.height * cos);
+  const c = document.createElement('canvas');
+  c.width = newW; c.height = newH;
+  const ctx = c.getContext('2d');
+  ctx.translate(newW / 2, newH / 2);
+  ctx.rotate(totalRad);
+  ctx.drawImage(img, -img.width / 2, -img.height / 2);
+  return c;
+}
+
+// ─── Warp + filter ───────────────────────────────────────────────────────────
+
+function applyWarpAndFilter(rotCanvas, corners, preset, filter) {
+  const W = rotCanvas.width, H = rotCanvas.height;
+  const srcPts = corners.map(p => ({ x: p.x * W, y: p.y * H }));
+
+  let targetW = Math.round(Math.max(
+    Math.hypot(srcPts[1].x - srcPts[0].x, srcPts[1].y - srcPts[0].y),
+    Math.hypot(srcPts[2].x - srcPts[3].x, srcPts[2].y - srcPts[3].y)
   ));
-  const outH = Math.round(Math.max(
-    Math.hypot(bl.x - tl.x, bl.y - tl.y),
-    Math.hypot(br.x - tr.x, br.y - tr.y)
+  let targetH = Math.round(Math.max(
+    Math.hypot(srcPts[3].x - srcPts[0].x, srcPts[3].y - srcPts[0].y),
+    Math.hypot(srcPts[2].x - srcPts[1].x, srcPts[2].y - srcPts[1].y)
   ));
 
-  const src4 = [tl, tr, br, bl];
-  const dst4 = [
-    { x: 0,    y: 0    },
-    { x: outW, y: 0    },
-    { x: outW, y: outH },
-    { x: 0,    y: outH },
+  if (preset === 'a4') {
+    if (targetW >= targetH) targetH = Math.round(targetW / 1.414);
+    else targetW = Math.round(targetH / 1.414);
+  } else if (preset === 'cnic') {
+    if (targetW >= targetH) targetH = Math.round(targetW / 1.586);
+    else targetW = Math.round(targetH / 1.586);
+  }
+
+  if (targetW < 10 || targetH < 10) return null;
+
+  const dstPts = [
+    { x: 0, y: 0 }, { x: targetW, y: 0 },
+    { x: targetW, y: targetH }, { x: 0, y: targetH },
   ];
 
-  const H    = computeHomography(dst4, src4); // dst→src for inverse mapping
-  const invH = H; // already dst→src
+  const H3 = solveHomography(srcPts, dstPts);
+  if (!H3) return null;
 
-  const srcCtx  = srcCanvas.getContext('2d');
-  const srcData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
-  const sW = srcCanvas.width, sH = srcCanvas.height;
+  const warpC = document.createElement('canvas');
+  warpC.width = targetW; warpC.height = targetH;
+  const warpCtx = warpC.getContext('2d');
+  const srcData = rotCanvas.getContext('2d').getImageData(0, 0, W, H);
+  const dstData = warpCtx.createImageData(targetW, targetH);
+  const sD = srcData.data, dD = dstData.data;
 
-  const outCanvas = document.createElement('canvas');
-  outCanvas.width  = outW;
-  outCanvas.height = outH;
-  const outCtx  = outCanvas.getContext('2d');
-  const outData = outCtx.createImageData(outW, outH);
-
-  const [h0,h1,h2,h3,h4,h5,h6,h7] = invH;
-
-  for (let dy = 0; dy < outH; dy++) {
-    for (let dx = 0; dx < outW; dx++) {
-      const w  = h6*dx + h7*dy + 1;
-      const sx = (h0*dx + h1*dy + h2) / w;
-      const sy = (h3*dx + h4*dy + h5) / w;
-
-      const x0 = Math.floor(sx), y0 = Math.floor(sy);
-      if (x0 < 0 || x0 >= sW - 1 || y0 < 0 || y0 >= sH - 1) continue;
-
-      // Bilinear interpolation
-      const fx = sx - x0, fy = sy - y0;
-      const i00 = (y0 * sW + x0) * 4;
-      const i10 = (y0 * sW + x0 + 1) * 4;
-      const i01 = ((y0+1) * sW + x0) * 4;
-      const i11 = ((y0+1) * sW + x0 + 1) * 4;
-      const d   = srcData.data;
-
-      const r = d[i00]*(1-fx)*(1-fy) + d[i10]*fx*(1-fy) + d[i01]*(1-fx)*fy + d[i11]*fx*fy;
-      const g = d[i00+1]*(1-fx)*(1-fy) + d[i10+1]*fx*(1-fy) + d[i01+1]*(1-fx)*fy + d[i11+1]*fx*fy;
-      const b = d[i00+2]*(1-fx)*(1-fy) + d[i10+2]*fx*(1-fy) + d[i01+2]*(1-fx)*fy + d[i11+2]*fx*fy;
-
-      const oi = (dy * outW + dx) * 4;
-      outData.data[oi]   = r;
-      outData.data[oi+1] = g;
-      outData.data[oi+2] = b;
-      outData.data[oi+3] = 255;
-    }
-  }
-
-  outCtx.putImageData(outData, 0, 0);
-
-  // Apply filter
-  return applyFilter(outCanvas, filter);
-}
-
-// ─── Canvas 2D filters ────────────────────────────────────────────────────────
-
-function applyFilter(canvas, filter) {
-  if (filter === 'original') return canvas;
-
-  const ctx  = canvas.getContext('2d');
-  const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d    = data.data;
-
-  for (let i = 0; i < d.length; i += 4) {
-    const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-
-    if (filter === 'grayscale') {
-      d[i] = d[i+1] = d[i+2] = gray;
-    } else if (filter === 'bw') {
-      const v = gray > 128 ? 255 : 0;
-      d[i] = d[i+1] = d[i+2] = v;
-    } else if (filter === 'magic') {
-      // Adaptive-like: boost contrast, whiten background, darken text
-      // Simple but effective: stretch contrast per-pixel around local mean
-      const boosted = Math.min(255, Math.max(0, (gray - 80) * 1.8));
-      const v = boosted > 140 ? 255 : boosted * 0.6;
-      d[i] = d[i+1] = d[i+2] = v;
-    }
-  }
-
-  ctx.putImageData(data, 0, 0);
-  return canvas;
-}
-
-// ─── Edge detection for auto-corner detection ─────────────────────────────────
-// Downsamples image, runs Sobel, finds the largest bright rectangle
-
-function autoDetectCorners(srcCanvas) {
-  const W = srcCanvas.width, H = srcCanvas.height;
-
-  // Work on a small copy for speed
-  const scale  = Math.min(1, 400 / Math.max(W, H));
-  const sw     = Math.round(W * scale), sh = Math.round(H * scale);
-  const small  = document.createElement('canvas');
-  small.width  = sw; small.height = sh;
-  const sCtx   = small.getContext('2d');
-  sCtx.drawImage(srcCanvas, 0, 0, sw, sh);
-  const imgData = sCtx.getImageData(0, 0, sw, sh).data;
-
-  // Grayscale + simple Sobel edge map
-  const gray  = new Uint8Array(sw * sh);
-  const edges = new Uint8Array(sw * sh);
-  for (let i = 0; i < sw * sh; i++) {
-    gray[i] = (imgData[i*4]*0.299 + imgData[i*4+1]*0.587 + imgData[i*4+2]*0.114);
-  }
-  for (let y = 1; y < sh - 1; y++) {
-    for (let x = 1; x < sw - 1; x++) {
-      const gx =
-        -gray[(y-1)*sw+(x-1)] + gray[(y-1)*sw+(x+1)]
-        -2*gray[y*sw+(x-1)]   + 2*gray[y*sw+(x+1)]
-        -gray[(y+1)*sw+(x-1)] + gray[(y+1)*sw+(x+1)];
-      const gy =
-        -gray[(y-1)*sw+(x-1)] - 2*gray[(y-1)*sw+x] - gray[(y-1)*sw+(x+1)]
-        +gray[(y+1)*sw+(x-1)] + 2*gray[(y+1)*sw+x] + gray[(y+1)*sw+(x+1)];
-      edges[y*sw+x] = Math.min(255, Math.sqrt(gx*gx + gy*gy));
-    }
-  }
-
-  // Scan for the outermost strong edge pixels in each quadrant
-  const thresh = 60;
-  const margin = Math.round(sw * 0.05);
-
-  // Find extreme edge points closest to each corner
-  const findCorner = (qx, qy) => {
-    // qx=0 → left half, qx=1 → right half; qy=0 → top, qy=1 → bottom
-    let best = null, bestDist = Infinity;
-    const cx = qx === 0 ? 0 : sw, cy = qy === 0 ? 0 : sh;
-    for (let y = margin; y < sh - margin; y++) {
-      for (let x = margin; x < sw - margin; x++) {
-        if (edges[y*sw+x] < thresh) continue;
-        // Only look in this quadrant
-        if (qx === 0 && x > sw * 0.6) continue;
-        if (qx === 1 && x < sw * 0.4) continue;
-        if (qy === 0 && y > sh * 0.6) continue;
-        if (qy === 1 && y < sh * 0.4) continue;
-        const d = Math.hypot(x - cx, y - cy);
-        if (d < bestDist) { bestDist = d; best = { x, y }; }
+  for (let v = 0; v < targetH; v++) {
+    for (let u = 0; u < targetW; u++) {
+      const den = H3[2][0] * u + H3[2][1] * v + H3[2][2];
+      const sx  = (H3[0][0] * u + H3[0][1] * v + H3[0][2]) / den;
+      const sy  = (H3[1][0] * u + H3[1][1] * v + H3[1][2]) / den;
+      if (sx >= 0 && sx < W - 1 && sy >= 0 && sy < H - 1) {
+        const x1 = Math.floor(sx), y1 = Math.floor(sy);
+        const dx = sx - x1, dy = sy - y1;
+        const i11 = (y1 * W + x1) * 4, i21 = (y1 * W + x1 + 1) * 4;
+        const i12 = ((y1+1)*W + x1) * 4, i22 = ((y1+1)*W + x1 + 1) * 4;
+        const di = (v * targetW + u) * 4;
+        for (let c = 0; c < 3; c++) {
+          dD[di+c] = (1-dx)*(1-dy)*sD[i11+c] + dx*(1-dy)*sD[i21+c]
+                   + (1-dx)*dy*sD[i12+c]  + dx*dy*sD[i22+c];
+        }
+        dD[di+3] = 255;
       }
     }
-    return best;
-  };
+  }
+  warpCtx.putImageData(dstData, 0, 0);
 
-  const tl = findCorner(0, 0);
-  const tr = findCorner(1, 0);
-  const br = findCorner(1, 1);
-  const bl = findCorner(0, 1);
-
-  const invScale = 1 / scale;
-  const fallback = (cx, cy) => ({
-    x: cx * W,
-    y: cy * H,
-  });
-
-  return [
-    tl ? { x: tl.x * invScale, y: tl.y * invScale } : fallback(0.05, 0.05),
-    tr ? { x: tr.x * invScale, y: tr.y * invScale } : fallback(0.95, 0.05),
-    br ? { x: br.x * invScale, y: br.y * invScale } : fallback(0.95, 0.95),
-    bl ? { x: bl.x * invScale, y: bl.y * invScale } : fallback(0.05, 0.95),
-  ];
+  // Apply filter
+  const fData = warpCtx.getImageData(0, 0, targetW, targetH);
+  const fd = fData.data;
+  for (let i = 0; i < fd.length; i += 4) {
+    let r = fd[i], g = fd[i+1], b = fd[i+2];
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    if (filter === 'magic') {
+      if (lum > 115) {
+        r = Math.min(255, r * 1.25 + 10);
+        g = Math.min(255, g * 1.25 + 10);
+        b = Math.min(255, b * 1.25 + 10);
+      } else {
+        r = Math.max(0, r * 0.7);
+        g = Math.max(0, g * 0.7);
+        b = Math.max(0, b * 0.7);
+      }
+    } else if (filter === 'bw') {
+      r = g = b = lum > 128 ? 255 : 0;
+    } else if (filter === 'gray') {
+      r = g = b = lum;
+    }
+    fd[i] = r; fd[i+1] = g; fd[i+2] = b;
+  }
+  warpCtx.putImageData(fData, 0, 0);
+  return warpC;
 }
 
-// ─── Canvas overlay drawing ───────────────────────────────────────────────────
+// ─── Draw interactive overlay with 8 handles ─────────────────────────────────
 
-const HANDLE_R = 14;
-
-function drawOverlay(canvas, img, corners, activeIdx) {
+function drawInteractive(canvas, rotCanvas, corners, isDragging, activeIdx) {
+  if (!rotCanvas || !canvas) return;
+  const W = rotCanvas.width, H = rotCanvas.height;
+  const maxW = canvas.parentElement?.clientWidth || 600;
+  const maxH = 400;
+  const scale = Math.min(maxW / W, maxH / H, 1);
+  canvas.width  = Math.round(W * scale);
+  canvas.height = Math.round(H * scale);
+  const dW = canvas.width, dH = canvas.height;
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  if (!corners || corners.length !== 4) return;
 
-  const sx = canvas.width  / img.naturalWidth;
-  const sy = canvas.height / img.naturalHeight;
-  const sc = corners.map(p => ({ x: p.x * sx, y: p.y * sy }));
+  // Base image
+  ctx.drawImage(rotCanvas, 0, 0, dW, dH);
 
-  // Dark vignette outside quad
+  const pts = get8Points(corners, dW, dH);
+
+  // Dark overlay
+  ctx.fillStyle = 'rgba(15,23,42,0.45)';
+  ctx.fillRect(0, 0, dW, dH);
+
+  // Bright cutout inside quad
   ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.globalCompositeOperation = 'destination-out';
   ctx.beginPath();
-  ctx.moveTo(sc[0].x, sc[0].y);
-  sc.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.closePath();
-  ctx.fill();
+  ctx.clip();
+  ctx.drawImage(rotCanvas, 0, 0, dW, dH);
   ctx.restore();
 
-  // Green quad border
-  ctx.save();
-  ctx.strokeStyle = '#10B981';
+  // Green border
+  ctx.strokeStyle = '#10b981';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
-  ctx.moveTo(sc[0].x, sc[0].y);
-  sc.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.closePath();
   ctx.stroke();
-  ctx.restore();
 
-  // Corner handles
-  const labels = ['↖', '↗', '↘', '↙'];
-  sc.forEach((p, i) => {
+  // 4 corner handles (green)
+  for (let i = 0; i < 4; i++) {
     ctx.beginPath();
-    ctx.arc(p.x, p.y, HANDLE_R, 0, Math.PI * 2);
-    ctx.fillStyle   = i === activeIdx ? '#10B981' : '#fff';
-    ctx.strokeStyle = '#10B981';
-    ctx.lineWidth   = 2.5;
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle    = i === activeIdx ? '#fff' : '#065f46';
-    ctx.font         = 'bold 11px sans-serif';
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(labels[i], p.x, p.y);
-  });
+    ctx.arc(pts[i].x, pts[i].y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#10b981'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // 4 edge midpoint handles (teal)
+  for (let i = 4; i < 8; i++) {
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, 6.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#2dd4bf'; ctx.fill();
+    ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Magnifier loupe while dragging
+  if (isDragging && activeIdx !== -1) {
+    const tp = pts[activeIdx];
+    const lr = 45, zoom = 2.2;
+    let lx = tp.x, ly = tp.y - 65;
+    if (ly < lr + 10) ly = tp.y + 65;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(lx, ly, lr, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(lx - lr, ly - lr, lr * 2, lr * 2);
+    const sw = (lr * 2) / zoom, sh = (lr * 2) / zoom;
+    const srcX = (tp.x / dW) * W - sw / 2;
+    const srcY = (tp.y / dH) * H - sh / 2;
+    ctx.drawImage(rotCanvas, srcX, srcY, sw, sh, lx - lr, ly - lr, lr * 2, lr * 2);
+    ctx.strokeStyle = '#10b981'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(lx - 12, ly); ctx.lineTo(lx + 12, ly);
+    ctx.moveTo(lx, ly - 12); ctx.lineTo(lx, ly + 12);
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(lx, ly, lr, 0, Math.PI * 2);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  return scale;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const FILTERS = [
-  { value: 'magic',     label: '✨ Magic Color' },
-  { value: 'bw',        label: '⬛ B&W' },
-  { value: 'grayscale', label: '🩶 Grayscale' },
-  { value: 'original',  label: '🖼 Original' },
+const DEFAULT_CORNERS = [
+  { x: 0.08, y: 0.08 }, { x: 0.92, y: 0.08 },
+  { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 },
 ];
 
-const STEP = { UPLOAD: 'upload', CROP: 'crop', RESULT: 'result' };
+const PRESETS = [
+  { id: 'auto',    label: 'Auto Free' },
+  { id: 'a4',      label: 'A4 Document' },
+  { id: 'cnic',    label: 'CNIC Card' },
+  { id: 'receipt', label: 'Receipt' },
+];
+
+const FILTERS = [
+  { id: 'magic',    label: '✨ Magic Color' },
+  { id: 'bw',       label: '⬛ B&W Clean' },
+  { id: 'gray',     label: '🩶 Grayscale' },
+  { id: 'original', label: '🖼 Original' },
+];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function SmartScanner({ isOpen, onClose, onScanned, embedded = false }) {
-  const [step,          setStep]          = useState(STEP.UPLOAD);
-  const [originalImage, setOriginalImage] = useState(null);
-  const [srcCanvas,     setSrcCanvas]     = useState(null); // full-res canvas
-  const [corners,       setCorners]       = useState(null);
-  const [filter,        setFilter]        = useState('magic');
-  const [resultUrl,     setResultUrl]     = useState(null);
-  const [processing,    setProcessing]    = useState(false);
-  const [error,         setError]         = useState(null);
+  // Image state
+  const [rawImage,     setRawImage]     = useState(null);  // HTMLImageElement
+  const [rotCanvas,    setRotCanvas]    = useState(null);  // rotated canvas
+  const [outputCanvas, setOutputCanvas] = useState(null);  // warped output canvas
+  const [hasImage,     setHasImage]     = useState(false);
 
-  const cropCanvasRef   = useRef(null);
-  const cameraVideoRef  = useRef(null);
+  // Controls
+  const [corners,    setCorners]    = useState(DEFAULT_CORNERS);
+  const [baseDeg,    setBaseDeg]    = useState(0);
+  const [fineDeg,    setFineDeg]    = useState(0);
+  const [preset,     setPreset]     = useState('auto');
+  const [filter,     setFilter]     = useState('magic');
+  const [processing, setProcessing] = useState(false);
+  const [error,      setError]      = useState(null);
+  const [dragLabel,  setDragLabel]  = useState('Drag points to crop');
+
+  // Refs
+  const interactiveRef = useRef(null);
+  const outputRef      = useRef(null);
+  const cameraVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
-  const dragRef         = useRef({ active: false, idx: -1 });
-  const scaleRef        = useRef({ sx: 1, sy: 1 });
+  const dragRef        = useRef({ active: false, idx: -1 });
+  const dragStart      = useRef({ x: 0, y: 0 });
+  const cornersOnDrag  = useRef(null);
+  const scaleRef       = useRef(1);
 
   // ── Reset ─────────────────────────────────────────────────────────────────
   const resetAll = useCallback(() => {
     cameraStreamRef.current?.getTracks().forEach(t => t.stop());
     cameraStreamRef.current = null;
-    setOriginalImage(null);
-    setSrcCanvas(null);
-    setCorners(null);
-    setResultUrl(null);
-    setError(null);
-    setStep(STEP.UPLOAD);
-    setFilter('magic');
+    setRawImage(null); setRotCanvas(null); setOutputCanvas(null);
+    setHasImage(false); setCorners(DEFAULT_CORNERS);
+    setBaseDeg(0); setFineDeg(0); setPreset('auto'); setFilter('magic');
+    setError(null); setProcessing(false);
   }, []);
 
-  useEffect(() => {
-    if (!isOpen && !embedded) resetAll();
-  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!isOpen && !embedded) resetAll(); }, [isOpen]); // eslint-disable-line
 
-  // ── Redraw canvas overlay ─────────────────────────────────────────────────
+  // ── Rebuild rotated canvas when rotation changes ──────────────────────────
   useEffect(() => {
-    if (step !== STEP.CROP || !originalImage || !cropCanvasRef.current) return;
-    const canvas = cropCanvasRef.current;
-    const maxW   = canvas.parentElement?.clientWidth || 600;
-    const maxH   = 320;
-    const scale  = Math.min(maxW / originalImage.naturalWidth,
-                            maxH / originalImage.naturalHeight, 1);
-    canvas.width  = Math.round(originalImage.naturalWidth  * scale);
-    canvas.height = Math.round(originalImage.naturalHeight * scale);
-    scaleRef.current = { sx: scale, sy: scale };
-    drawOverlay(canvas, originalImage, corners, dragRef.current.idx);
-  }, [step, originalImage, corners]);
+    if (!rawImage) return;
+    const c = buildRotatedCanvas(rawImage, baseDeg, fineDeg);
+    setRotCanvas(c);
+  }, [rawImage, baseDeg, fineDeg]);
 
+  // ── Redraw interactive + output when anything changes ────────────────────
   useEffect(() => {
-    const fn = () => {
-      if (step !== STEP.CROP || !originalImage || !cropCanvasRef.current) return;
-      const canvas = cropCanvasRef.current;
-      const maxW   = canvas.parentElement?.clientWidth || 600;
-      const maxH   = 320;
-      const scale  = Math.min(maxW / originalImage.naturalWidth,
-                              maxH / originalImage.naturalHeight, 1);
-      canvas.width  = Math.round(originalImage.naturalWidth  * scale);
-      canvas.height = Math.round(originalImage.naturalHeight * scale);
-      scaleRef.current = { sx: scale, sy: scale };
-      drawOverlay(canvas, originalImage, corners, dragRef.current.idx);
+    if (!rotCanvas) return;
+    const scale = drawInteractive(
+      interactiveRef.current, rotCanvas, corners,
+      dragRef.current.active, dragRef.current.idx
+    );
+    if (scale) scaleRef.current = scale;
+
+    // Warp output in next frame
+    requestAnimationFrame(() => {
+      const out = applyWarpAndFilter(rotCanvas, corners, preset, filter);
+      if (out) {
+        setOutputCanvas(out);
+        if (outputRef.current) {
+          const ctx = outputRef.current.getContext('2d');
+          outputRef.current.width  = out.width;
+          outputRef.current.height = out.height;
+          ctx.drawImage(out, 0, 0);
+        }
+      }
+    });
+  }, [rotCanvas, corners, preset, filter]);
+
+  // ── Load image ────────────────────────────────────────────────────────────
+  const loadImage = useCallback((img) => {
+    setRawImage(img);
+    setBaseDeg(0); setFineDeg(0);
+    setCorners(DEFAULT_CORNERS);
+    setHasImage(true);
+    setError(null);
+  }, []);
+
+  const loadFromFile = useCallback((file) => {
+    setProcessing(true);
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => { loadImage(img); setProcessing(false); };
+      img.src = e.target.result;
     };
-    window.addEventListener('resize', fn);
-    return () => window.removeEventListener('resize', fn);
-  }, [step, originalImage, corners]);
+    reader.readAsDataURL(file);
+  }, [loadImage]);
 
   // ── Camera ────────────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
@@ -397,176 +397,162 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
       });
       cameraStreamRef.current = stream;
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = stream;
-    } catch {
-      setError('Camera access denied — use file upload instead.');
-    }
+    } catch { setError('Camera access denied — use file upload instead.'); }
   }, []);
 
-  const captureFromCamera = useCallback(() => {
-    const video = cameraVideoRef.current;
-    if (!video?.videoWidth) return;
+  const captureCamera = useCallback(() => {
+    const v = cameraVideoRef.current;
+    if (!v?.videoWidth) return;
     const c = document.createElement('canvas');
-    c.width = video.videoWidth; c.height = video.videoHeight;
-    c.getContext('2d').drawImage(video, 0, 0);
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
     cameraStreamRef.current?.getTracks().forEach(t => t.stop());
     cameraStreamRef.current = null;
-    loadImageFromDataUrl(c.toDataURL('image/jpeg', 0.95));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Load image ────────────────────────────────────────────────────────────
-  const loadImageFromFile = useCallback((file) => {
-    const reader = new FileReader();
-    reader.onload = e => loadImageFromDataUrl(e.target.result);
-    reader.readAsDataURL(file);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadImageFromDataUrl = useCallback((dataUrl) => {
-    setError(null);
-    setProcessing(true);
     const img = new Image();
-    img.onload = () => {
-      // Build full-res canvas immediately — no blocking ops
-      const c = document.createElement('canvas');
-      c.width = img.naturalWidth; c.height = img.naturalHeight;
-      c.getContext('2d').drawImage(img, 0, 0);
+    img.onload = () => loadImage(img);
+    img.src = c.toDataURL('image/jpeg', 0.95);
+  }, [loadImage]);
 
-      setOriginalImage(img);
-      setSrcCanvas(c);
-
-      // Default corners — instant, no computation
-      const dflt = [
-        { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.05 },
-        { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.05 },
-        { x: img.naturalWidth  * 0.95, y: img.naturalHeight * 0.95 },
-        { x: img.naturalWidth  * 0.05, y: img.naturalHeight * 0.95 },
-      ];
-      setCorners(dflt);
-      setStep(STEP.CROP);
-      setProcessing(false);
-
-      // Run edge detection in the next idle frame — pure JS, but still
-      // can be slow on very large images so we do it off the critical path
-      requestIdleCallback ? requestIdleCallback(() => {
-        const detected = autoDetectCorners(c);
-        setCorners(detected);
-      }) : setTimeout(() => {
-        const detected = autoDetectCorners(c);
-        setCorners(detected);
-      }, 200);
-    };
-    img.src = dataUrl;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Re-detect ─────────────────────────────────────────────────────────────
-  const handleRedetect = useCallback(() => {
-    if (!srcCanvas) return;
-    setProcessing(true);
-    setTimeout(() => {
-      const detected = autoDetectCorners(srcCanvas);
-      setCorners(detected);
-      setProcessing(false);
-    }, 20);
-  }, [srcCanvas]);
-
-  // ── Drag ──────────────────────────────────────────────────────────────────
-  const canvasPt = (e, canvas) => {
-    const r  = canvas.getBoundingClientRect();
+  // ── Drag handlers ─────────────────────────────────────────────────────────
+  const getCanvasPos = (e, canvas) => {
+    const r = canvas.getBoundingClientRect();
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
     const cy = e.touches ? e.touches[0].clientY : e.clientY;
     return {
-      x: (cx - r.left) * (canvas.width  / r.width),
+      x: (cx - r.left) * (canvas.width / r.width),
       y: (cy - r.top)  * (canvas.height / r.height),
     };
   };
 
   const handlePointerDown = useCallback((e) => {
     e.preventDefault();
-    const canvas = cropCanvasRef.current;
-    if (!canvas || !corners) return;
-    const pt = canvasPt(e, canvas);
-    const { sx, sy } = scaleRef.current;
-    let found = -1;
-    corners.forEach((c, i) => {
-      if (Math.hypot(pt.x - c.x * sx, pt.y - c.y * sy) < HANDLE_R * 2) found = i;
+    const canvas = interactiveRef.current;
+    if (!canvas || !rotCanvas) return;
+    const pos = getCanvasPos(e, canvas);
+    const dW = canvas.width, dH = canvas.height;
+    const pts = get8Points(corners, dW, dH);
+
+    let found = -1, minD = 28;
+    pts.forEach((p, i) => {
+      const d = Math.hypot(p.x - pos.x, p.y - pos.y);
+      if (d < minD) { minD = d; found = i; }
     });
-    if (found !== -1) dragRef.current = { active: true, idx: found };
-  }, [corners]);
+
+    if (found !== -1) {
+      dragRef.current = { active: true, idx: found };
+      dragStart.current = pos;
+      cornersOnDrag.current = corners.map(c => ({ ...c }));
+      setDragLabel(found < 4 ? `Dragging Corner ${found + 1}` : 'Resizing Edge Handle');
+    }
+  }, [corners, rotCanvas]);
 
   const handlePointerMove = useCallback((e) => {
+    if (!dragRef.current.active) return;
     e.preventDefault();
-    if (!dragRef.current.active || !corners || !originalImage) return;
-    const canvas = cropCanvasRef.current;
+    const canvas = interactiveRef.current;
     if (!canvas) return;
-    const pt = canvasPt(e, canvas);
-    const { sx, sy } = scaleRef.current;
-    const next = [...corners];
-    next[dragRef.current.idx] = {
-      x: Math.max(0, Math.min(originalImage.naturalWidth,  pt.x / sx)),
-      y: Math.max(0, Math.min(originalImage.naturalHeight, pt.y / sy)),
-    };
-    setCorners(next);
-  }, [corners, originalImage]);
+    const pos = getCanvasPos(e, canvas);
+    const dW = canvas.width, dH = canvas.height;
+    const dx = (pos.x - dragStart.current.x) / dW;
+    const dy = (pos.y - dragStart.current.y) / dH;
+    const ic = cornersOnDrag.current;
+    const idx = dragRef.current.idx;
+    const next = ic.map(c => ({ ...c }));
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  const handlePointerUp = useCallback((e) => {
-    e.preventDefault();
-    dragRef.current = { active: false, idx: -1 };
+    if (idx < 4) {
+      next[idx] = { x: clamp(ic[idx].x + dx, 0, 1), y: clamp(ic[idx].y + dy, 0, 1) };
+    } else if (idx === 4) { // top edge
+      next[0].y = clamp(ic[0].y + dy, 0, next[3].y - 0.05);
+      next[1].y = clamp(ic[1].y + dy, 0, next[2].y - 0.05);
+      next[0].x = clamp(ic[0].x + dx, 0, next[1].x - 0.05);
+      next[1].x = clamp(ic[1].x + dx, 0, 1);
+    } else if (idx === 5) { // right edge
+      next[1].x = clamp(ic[1].x + dx, next[0].x + 0.05, 1);
+      next[2].x = clamp(ic[2].x + dx, next[3].x + 0.05, 1);
+      next[1].y = clamp(ic[1].y + dy, 0, next[2].y - 0.05);
+      next[2].y = clamp(ic[2].y + dy, 0, 1);
+    } else if (idx === 6) { // bottom edge
+      next[2].y = clamp(ic[2].y + dy, next[1].y + 0.05, 1);
+      next[3].y = clamp(ic[3].y + dy, next[0].y + 0.05, 1);
+      next[2].x = clamp(ic[2].x + dx, next[3].x + 0.05, 1);
+      next[3].x = clamp(ic[3].x + dx, 0, next[2].x - 0.05);
+    } else if (idx === 7) { // left edge
+      next[0].x = clamp(ic[0].x + dx, 0, next[1].x - 0.05);
+      next[3].x = clamp(ic[3].x + dx, 0, next[2].x - 0.05);
+      next[0].y = clamp(ic[0].y + dy, 0, next[3].y - 0.05);
+      next[3].y = clamp(ic[3].y + dy, 0, 1);
+    }
+    setCorners(next);
   }, []);
 
-  // ── Scan — pure JS warp, runs in ~100ms even for large images ─────────────
-  const handleScan = useCallback(() => {
-    if (!srcCanvas || !corners) return;
-    setProcessing(true);
-    setError(null);
-    // setTimeout gives React time to show the spinner before the CPU work
-    setTimeout(() => {
-      try {
-        const out = warpPerspective(srcCanvas, corners, filter);
-        setResultUrl(out.toDataURL('image/jpeg', 0.93));
-        setStep(STEP.RESULT);
-      } catch (err) {
-        setError('Scan failed: ' + err.message);
-      } finally {
-        setProcessing(false);
-      }
-    }, 30);
-  }, [srcCanvas, corners, filter]);
+  const handlePointerUp = useCallback((e) => {
+    e?.preventDefault();
+    dragRef.current = { active: false, idx: -1 };
+    setDragLabel('Drag points to crop');
+  }, []);
 
-  // Re-apply filter live on result screen
-  useEffect(() => {
-    if (step !== STEP.RESULT || !srcCanvas || !corners) return;
-    setTimeout(() => {
-      try {
-        const out = warpPerspective(srcCanvas, corners, filter);
-        setResultUrl(out.toDataURL('image/jpeg', 0.93));
-      } catch {}
-    }, 10);
-  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Rotation ──────────────────────────────────────────────────────────────
+  const rotate = (deg) => setBaseDeg(b => (b + deg) % 360);
 
-  // ── Accept ────────────────────────────────────────────────────────────────
-  const handleAccept = useCallback(async () => {
-    if (!resultUrl) return;
-    const res  = await fetch(resultUrl);
-    const blob = await res.blob();
-    onScanned(new File([blob], `scan-${Date.now()}.jpg`, { type: 'image/jpeg' }));
-    if (!embedded) { resetAll(); onClose(); }
-  }, [resultUrl, onScanned, onClose, embedded, resetAll]);
+  // ── Auto deskew (geometry-only, no OpenCV needed) ─────────────────────────
+  const autoStraighten = useCallback(() => {
+    const dy = (corners[1].y - corners[0].y);
+    const dx = (corners[1].x - corners[0].x);
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    if (Math.abs(angleDeg) > 0.2) {
+      setFineDeg(-angleDeg);
+    }
+  }, [corners]);
+
+  // ── Reset corners ─────────────────────────────────────────────────────────
+  const resetCorners = () => setCorners([
+    { x: 0.04, y: 0.04 }, { x: 0.96, y: 0.04 },
+    { x: 0.96, y: 0.96 }, { x: 0.04, y: 0.96 },
+  ]);
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  const downloadOutput = (fmt) => {
+    if (!outputCanvas) return;
+    const link = document.createElement('a');
+    link.download = `Scanned_${Date.now()}.${fmt}`;
+    link.href = outputCanvas.toDataURL(fmt === 'png' ? 'image/png' : 'image/jpeg', 0.95);
+    link.click();
+  };
+
+  // ── Use scan — returns File to parent ─────────────────────────────────────
+  const handleUseScan = useCallback(async () => {
+    if (!outputCanvas) return;
+    outputCanvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], `scan-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      onScanned(file);
+      if (!embedded) { resetAll(); onClose(); }
+    }, 'image/jpeg', 0.93);
+  }, [outputCanvas, onScanned, onClose, embedded, resetAll]);
+
+  // ── Drag-drop ─────────────────────────────────────────────────────────────
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file?.type.startsWith('image/')) loadFromFile(file);
+  }, [loadFromFile]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   const content = (
-    <div className="space-y-3">
+    <div className="space-y-3 text-sm">
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700">
-          ⚠ {error}
-        </div>
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-red-700 text-xs">⚠ {error}</div>
       )}
 
-      {/* ═══ UPLOAD ══════════════════════════════════════════════════════════ */}
-      {step === STEP.UPLOAD && (
+      {/* ── UPLOAD STATE ── */}
+      {!hasImage && (
         <div className="space-y-3">
+          {/* Camera */}
           <div className="relative bg-slate-900 rounded-xl overflow-hidden" style={{ minHeight: 180 }}>
             <video ref={cameraVideoRef} autoPlay playsInline muted
-              className="w-full object-cover rounded-xl" style={{ maxHeight: '38vh' }} />
+              className="w-full object-cover rounded-xl" style={{ maxHeight: '36vh' }} />
             {!cameraStreamRef.current && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/40">
                 <HiOutlineCamera className="w-10 h-10" />
@@ -574,136 +560,176 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
               </div>
             )}
           </div>
-
           <div className="grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={startCamera} className="flex items-center justify-center gap-2 text-sm">
+            <Button variant="secondary" onClick={startCamera} className="flex items-center justify-center gap-2 text-xs">
               <HiOutlineCamera className="w-4 h-4" /> Start Camera
             </Button>
-            <Button variant="primary" onClick={captureFromCamera}
-              disabled={!cameraStreamRef.current}
-              className="flex items-center justify-center gap-2 text-sm">
+            <Button variant="primary" onClick={captureCamera} disabled={!cameraStreamRef.current}
+              className="flex items-center justify-center gap-2 text-xs">
               <HiOutlineLightningBolt className="w-4 h-4" /> Capture
             </Button>
           </div>
-
           <div className="flex items-center gap-2">
             <div className="flex-1 h-px bg-gray-200" />
             <span className="text-xs text-gray-400">OR</span>
             <div className="flex-1 h-px bg-gray-200" />
           </div>
-
-          <label className="cursor-pointer flex flex-col items-center justify-center gap-1.5 w-full py-5
-            border-2 border-dashed border-blue-300 rounded-xl text-blue-600 hover:bg-blue-50 transition-colors">
+          <label
+            className="cursor-pointer flex flex-col items-center justify-center gap-1.5 w-full py-5
+              border-2 border-dashed border-emerald-300 rounded-xl text-emerald-600
+              hover:bg-emerald-50 transition-colors"
+            onDragOver={e => e.preventDefault()}
+            onDrop={handleDrop}
+          >
             <HiOutlineUpload className="w-6 h-6" />
-            <span className="text-sm font-semibold">Upload Image</span>
+            <span className="text-sm font-semibold">Drop or Upload Image</span>
             <span className="text-xs text-gray-400">JPG · PNG · WebP</span>
             <input type="file" accept="image/*" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) { loadImageFromFile(f); e.target.value=''; }}} />
+              onChange={e => { const f = e.target.files?.[0]; if (f) loadFromFile(f); e.target.value=''; }} />
           </label>
-
-          {processing && (
-            <p className="text-center text-xs text-gray-500 animate-pulse">Loading image…</p>
-          )}
+          {processing && <p className="text-center text-xs text-gray-400 animate-pulse">Loading…</p>}
         </div>
       )}
 
-      {/* ═══ CROP ════════════════════════════════════════════════════════════ */}
-      {step === STEP.CROP && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-gray-600">
-              Drag <span className="font-bold text-emerald-600">green handles</span> to frame document.
-            </p>
-            <button onClick={handleRedetect} disabled={processing}
-              className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 font-medium disabled:opacity-40">
-              <HiOutlineRefresh className="w-3.5 h-3.5" />
-              {processing ? 'Detecting…' : 'Re-detect'}
-            </button>
-          </div>
-
-          <div className="rounded-xl border border-gray-200 bg-slate-900 overflow-hidden select-none touch-none cursor-crosshair">
-            <canvas ref={cropCanvasRef} className="block w-full" style={{ touchAction: 'none' }}
-              onMouseDown={handlePointerDown} onMouseMove={handlePointerMove}
-              onMouseUp={handlePointerUp}   onMouseLeave={handlePointerUp}
-              onTouchStart={handlePointerDown} onTouchMove={handlePointerMove}
-              onTouchEnd={handlePointerUp} />
-          </div>
-
-          {/* Filter pills */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <HiOutlineAdjustments className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-            {FILTERS.map(f => (
-              <button key={f.value} onClick={() => setFilter(f.value)}
-                className={`px-2 py-0.5 rounded text-xs font-semibold border transition-all ${
-                  filter === f.value
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400'
-                }`}>
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <Button variant="secondary" onClick={() => { setStep(STEP.UPLOAD); setOriginalImage(null); setCorners(null); }}
-              className="text-sm">
-              ← Back
-            </Button>
-            <Button variant="primary" onClick={handleScan}
-              disabled={!corners || processing}
-              className="flex items-center gap-2 text-sm bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
-              {processing
-                ? <><svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg> Processing…</>
-                : <><HiOutlineLightningBolt className="w-4 h-4" /> Scan &amp; Straighten</>
-              }
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* ═══ RESULT ══════════════════════════════════════════════════════════ */}
-      {step === STEP.RESULT && resultUrl && (
+      {/* ── WORKSPACE ── */}
+      {hasImage && (
         <div className="space-y-3">
-          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-emerald-800">
-            <HiOutlineCheck className="w-4 h-4 shrink-0" /> Scanned &amp; straightened
-          </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-gray-500 font-medium">Filter:</span>
-            {FILTERS.map(f => (
-              <button key={f.value} onClick={() => setFilter(f.value)}
-                className={`px-2 py-0.5 rounded text-xs font-semibold border transition-all ${
-                  filter === f.value
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-400'
-                }`}>
-                {f.label}
+          {/* Toolbar row 1 — rotation + auto straighten */}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-gray-500 uppercase tracking-wide shrink-0">Straighten:</span>
+            <button onClick={autoStraighten}
+              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1">
+              <HiOutlineAdjustments className="w-3.5 h-3.5" /> Auto
+            </button>
+            <button onClick={() => rotate(-90)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center gap-1">
+              <HiOutlineArrowLeft className="w-3.5 h-3.5" /> -90°
+            </button>
+            <button onClick={() => rotate(90)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center gap-1">
+              +90° <HiOutlineArrowRight className="w-3.5 h-3.5" />
+            </button>
+            <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-2 py-1">
+              <span className="text-xs font-mono text-gray-500 w-8 text-right">{fineDeg.toFixed(1)}°</span>
+              <input type="range" min="-45" max="45" step="0.5" value={fineDeg}
+                onChange={e => setFineDeg(parseFloat(e.target.value))}
+                className="w-20 accent-emerald-500 cursor-pointer" />
+              <button onClick={() => setFineDeg(0)} className="text-[10px] text-gray-400 hover:text-emerald-600">Reset</button>
+            </div>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button onClick={resetCorners}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-600">
+                Full Frame
               </button>
-            ))}
-          </div>
-
-          <div className="rounded-xl border border-gray-200 bg-slate-100 flex items-center justify-center p-2"
-            style={{ maxHeight: 320 }}>
-            <img src={resultUrl} alt="Scanned"
-              className="max-h-full max-w-full object-contain rounded shadow"
-              style={{ maxHeight: 300 }} />
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <Button variant="secondary" onClick={() => { setStep(STEP.CROP); setResultUrl(null); }} className="text-sm">
-              ← Adjust
-            </Button>
-            <div className="flex gap-2">
-              <Button variant="secondary" onClick={resetAll} className="text-sm">New Scan</Button>
-              <Button variant="primary" onClick={handleAccept}
-                className="flex items-center gap-2 text-sm bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
-                <HiOutlineCheck className="w-4 h-4" /> Use This Scan
-              </Button>
+              <button onClick={() => { setHasImage(false); setRawImage(null); setRotCanvas(null); }}
+                className="p-1.5 rounded-lg bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600">
+                <HiOutlineX className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
+
+          {/* Toolbar row 2 — presets + filters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 gap-0.5">
+              {PRESETS.map(p => (
+                <button key={p.id} onClick={() => setPreset(p.id)}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+                    preset === p.id
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 gap-0.5">
+              {FILTERS.map(f => (
+                <button key={f.id} onClick={() => setFilter(f.id)}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+                    filter === f.id
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Dual panel */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+            {/* Left — interactive crop */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-2 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-gray-600 uppercase tracking-wide">
+                  Original — Drag Handles
+                </span>
+                <span className="text-[11px] font-mono text-emerald-600">{dragLabel}</span>
+              </div>
+              <div className="bg-slate-900 rounded-lg overflow-hidden select-none touch-none cursor-crosshair">
+                <canvas ref={interactiveRef} className="block w-full" style={{ touchAction: 'none' }}
+                  onMouseDown={handlePointerDown}
+                  onMouseMove={handlePointerMove}
+                  onMouseUp={handlePointerUp}
+                  onMouseLeave={handlePointerUp}
+                  onTouchStart={handlePointerDown}
+                  onTouchMove={handlePointerMove}
+                  onTouchEnd={handlePointerUp}
+                />
+              </div>
+              <div className="flex items-center gap-3 text-[11px] text-gray-500">
+                <span className="flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> 4 Corners
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-teal-400 inline-block" /> 4 Edge Handles
+                </span>
+              </div>
+            </div>
+
+            {/* Right — warped output */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-2 space-y-1.5">
+              <span className="text-xs font-bold text-emerald-700 uppercase tracking-wide block">
+                ✅ Scanned Output
+              </span>
+              <div className="bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center"
+                style={{ minHeight: 180 }}>
+                <canvas ref={outputRef} className="block max-w-full max-h-64 object-contain" />
+              </div>
+              {/* Download + Use buttons */}
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <div className="flex gap-1.5">
+                  <button onClick={() => downloadOutput('jpg')}
+                    className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center gap-1">
+                    <HiOutlineDownload className="w-3.5 h-3.5" /> JPG
+                  </button>
+                  <button onClick={() => downloadOutput('png')}
+                    className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center gap-1">
+                    <HiOutlineDownload className="w-3.5 h-3.5" /> PNG
+                  </button>
+                </div>
+                <Button variant="primary" onClick={handleUseScan}
+                  className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 border-emerald-600 px-3 py-1.5">
+                  <HiOutlineCheck className="w-4 h-4" /> Use This Scan
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom action bar */}
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <Button variant="secondary" onClick={resetAll} className="text-xs">
+              ← New Image
+            </Button>
+            <p className="text-xs text-gray-400">
+              Drag the <span className="font-semibold text-emerald-600">green corners</span> &amp; <span className="font-semibold text-teal-500">teal edge handles</span> to precisely frame your document
+            </p>
+          </div>
+
         </div>
       )}
-
     </div>
   );
 
@@ -711,7 +737,7 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
 
   return (
     <Modal isOpen={isOpen} onClose={() => { resetAll(); onClose(); }}
-      title="📄 Smart Document Scanner" size="2xl">
+      title="📄 Smart Document Scanner" size="4xl">
       {content}
     </Modal>
   );

@@ -1,9 +1,13 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { renderCropOverlay, HANDLE_RADIUS } from './CropCornerHandles';
+import {
+  renderCropOverlay,
+  get8ControlPoints,
+  CORNER_HANDLE_RADIUS,
+  EDGE_HANDLE_RADIUS,
+} from './CropCornerHandles';
 import Button from '../ui/Button';
 import {
   HiOutlineSparkles,
-  HiOutlineRefresh,
   HiOutlineCheck,
   HiOutlineArrowsExpand,
 } from 'react-icons/hi';
@@ -19,15 +23,17 @@ export default function DocumentCropper({
   const containerRef = useRef(null);
   const imageRef = useRef(null);
 
-  const [activeCornerIdx, setActiveCornerIdx] = useState(-1);
+  const [activeHandleIdx, setActiveHandleIdx] = useState(-1);
   const [scaleFactor, setScaleFactor] = useState(1);
-  const [magnifierInfo, setMagnifierInfo] = useState(null); // { x, y, canvasX, canvasY }
+  const [magnifierInfo, setMagnifierInfo] = useState(null);
   const [dragCorners, setDragCorners] = useState(null);
+  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
+  const [initialCornersOnDrag, setInitialCornersOnDrag] = useState([]);
 
   const corners = useMemo(() => documentPage?.corners || [], [documentPage?.corners]);
   const activeCorners = dragCorners || corners;
 
-  // Redraw canvas with source image and overlay
+  // Redraw canvas with source image and 8-handle overlay
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageRef.current;
@@ -61,8 +67,8 @@ export default function DocumentCropper({
       y: p.y * scale,
     }));
 
-    renderCropOverlay(ctx, displayW, displayH, displayCorners, activeCornerIdx);
-  }, [activeCorners, activeCornerIdx]);
+    renderCropOverlay(ctx, displayW, displayH, displayCorners, activeHandleIdx);
+  }, [activeCorners, activeHandleIdx]);
 
   // Load original image
   useEffect(() => {
@@ -107,24 +113,36 @@ export default function DocumentCropper({
     const { x, y } = getCanvasCoordinates(e);
     const scale = scaleFactor || 1;
 
-    // Find if pointer is near any corner handle
+    const displayCorners = corners.map((p) => ({
+      x: p.x * scale,
+      y: p.y * scale,
+    }));
+
+    const pts = get8ControlPoints(displayCorners);
     let foundIdx = -1;
-    corners.forEach((c, idx) => {
-      const cx = c.x * scale;
-      const cy = c.y * scale;
-      if (Math.hypot(x - cx, y - cy) <= HANDLE_RADIUS * 2.2) {
+    let minDist = 32;
+
+    pts.forEach((pt, idx) => {
+      const dist = Math.hypot(pt.x - x, pt.y - y);
+      const hitRadius = idx < 4 ? CORNER_HANDLE_RADIUS * 2.2 : EDGE_HANDLE_RADIUS * 2.5;
+      if (dist < hitRadius && dist < minDist) {
+        minDist = dist;
         foundIdx = idx;
       }
     });
 
     if (foundIdx !== -1) {
       e.preventDefault();
-      setActiveCornerIdx(foundIdx);
+      setActiveHandleIdx(foundIdx);
+      setDragStartPos({ x, y });
+      setInitialCornersOnDrag(JSON.parse(JSON.stringify(corners)));
       setDragCorners([...corners]);
+
+      const targetPt = pts[foundIdx];
       setMagnifierInfo({
-        cornerIdx: foundIdx,
-        x: corners[foundIdx].x,
-        y: corners[foundIdx].y,
+        handleIdx: foundIdx,
+        x: targetPt.x / scale,
+        y: targetPt.y / scale,
         canvasX: x,
         canvasY: y,
       });
@@ -132,7 +150,7 @@ export default function DocumentCropper({
   };
 
   const handlePointerMove = (e) => {
-    if (activeCornerIdx === -1 || !imageRef.current) return;
+    if (activeHandleIdx === -1 || !imageRef.current) return;
     e.preventDefault();
     const { x, y } = getCanvasCoordinates(e);
     const scale = scaleFactor || 1;
@@ -140,23 +158,81 @@ export default function DocumentCropper({
     const imgW = imageRef.current.naturalWidth;
     const imgH = imageRef.current.naturalHeight;
 
-    const naturalX = Math.max(0, Math.min(imgW, Math.round(x / scale)));
-    const naturalY = Math.max(0, Math.min(imgH, Math.round(y / scale)));
+    const init = initialCornersOnDrag;
+    if (!init || init.length !== 4) return;
 
-    const baseCorners = dragCorners || corners;
-    const nextCorners = baseCorners.map((c, i) =>
-      i === activeCornerIdx ? { x: naturalX, y: naturalY } : c
-    );
+    let nextCorners = JSON.parse(JSON.stringify(init));
+
+    if (activeHandleIdx < 4) {
+      // Direct corner manipulation
+      const naturalX = Math.max(0, Math.min(imgW, Math.round(x / scale)));
+      const naturalY = Math.max(0, Math.min(imgH, Math.round(y / scale)));
+      nextCorners[activeHandleIdx] = { x: naturalX, y: naturalY };
+
+      setMagnifierInfo({
+        handleIdx: activeHandleIdx,
+        x: naturalX,
+        y: naturalY,
+        canvasX: x,
+        canvasY: y,
+      });
+    } else {
+      // 8-Point Edge Handle manipulation ("Dermyan me resize")
+      const dxNat = Math.round((x - dragStartPos.x) / scale);
+      const dyNat = Math.round((y - dragStartPos.y) / scale);
+
+      if (activeHandleIdx === 4) {
+        // Top-Middle edge -> Adjusts TL (0) & TR (1)
+        nextCorners[0] = {
+          x: Math.max(0, Math.min(init[1].x - 20, init[0].x + dxNat)),
+          y: Math.max(0, Math.min(init[3].y - 20, init[0].y + dyNat)),
+        };
+        nextCorners[1] = {
+          x: Math.max(init[0].x + 20, Math.min(imgW, init[1].x + dxNat)),
+          y: Math.max(0, Math.min(init[2].y - 20, init[1].y + dyNat)),
+        };
+      } else if (activeHandleIdx === 5) {
+        // Right-Middle edge -> Adjusts TR (1) & BR (2)
+        nextCorners[1] = {
+          x: Math.max(init[0].x + 20, Math.min(imgW, init[1].x + dxNat)),
+          y: Math.max(0, Math.min(init[2].y - 20, init[1].y + dyNat)),
+        };
+        nextCorners[2] = {
+          x: Math.max(init[3].x + 20, Math.min(imgW, init[2].x + dxNat)),
+          y: Math.max(init[1].y + 20, Math.min(imgH, init[2].y + dyNat)),
+        };
+      } else if (activeHandleIdx === 6) {
+        // Bottom-Middle edge -> Adjusts BR (2) & BL (3)
+        nextCorners[2] = {
+          x: Math.max(init[3].x + 20, Math.min(imgW, init[2].x + dxNat)),
+          y: Math.max(init[1].y + 20, Math.min(imgH, init[2].y + dyNat)),
+        };
+        nextCorners[3] = {
+          x: Math.max(0, Math.min(init[2].x - 20, init[3].x + dxNat)),
+          y: Math.max(init[0].y + 20, Math.min(imgH, init[3].y + dyNat)),
+        };
+      } else if (activeHandleIdx === 7) {
+        // Left-Middle edge -> Adjusts BL (3) & TL (0)
+        nextCorners[0] = {
+          x: Math.max(0, Math.min(init[1].x - 20, init[0].x + dxNat)),
+          y: Math.max(0, Math.min(init[3].y - 20, init[0].y + dyNat)),
+        };
+        nextCorners[3] = {
+          x: Math.max(0, Math.min(init[2].x - 20, init[3].x + dxNat)),
+          y: Math.max(init[0].y + 20, Math.min(imgH, init[3].y + dyNat)),
+        };
+      }
+
+      setMagnifierInfo({
+        handleIdx: activeHandleIdx,
+        x: Math.round(x / scale),
+        y: Math.round(y / scale),
+        canvasX: x,
+        canvasY: y,
+      });
+    }
 
     setDragCorners(nextCorners);
-
-    setMagnifierInfo({
-      cornerIdx: activeCornerIdx,
-      x: naturalX,
-      y: naturalY,
-      canvasX: x,
-      canvasY: y,
-    });
   };
 
   const handlePointerUp = () => {
@@ -164,20 +240,36 @@ export default function DocumentCropper({
       onUpdateCorners(dragCorners);
       setDragCorners(null);
     }
-    setActiveCornerIdx(-1);
+    setActiveHandleIdx(-1);
     setMagnifierInfo(null);
+  };
+
+  const getHandleStatusText = () => {
+    if (activeHandleIdx === -1) return 'Drag 4 corners or 4 middle edge handles to crop';
+    const labels = [
+      'Moving Top-Left Corner (TL)',
+      'Moving Top-Right Corner (TR)',
+      'Moving Bottom-Right Corner (BR)',
+      'Moving Bottom-Left Corner (BL)',
+      'Resizing Top Edge (TL + TR)',
+      'Resizing Right Edge (TR + BR)',
+      'Resizing Bottom Edge (BR + BL)',
+      'Resizing Left Edge (BL + TL)',
+    ];
+    return labels[activeHandleIdx] || 'Adjusting boundary';
   };
 
   return (
     <div className="space-y-3">
       {/* Action Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 text-slate-100 rounded-xl px-3.5 py-2.5 border border-slate-800 shadow-sm">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-gray-800">
-            Perspective Boundary Cropping
+          <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            8-Point Interactive Crop
           </span>
-          <span className="text-[11px] text-gray-500 hidden sm:inline">
-            Drag the 4 corner targets to frame the document edges.
+          <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+            {getHandleStatusText()}
           </span>
         </div>
 
@@ -186,10 +278,10 @@ export default function DocumentCropper({
             size="sm"
             variant="secondary"
             onClick={onAutoDetect}
-            className="flex items-center gap-1.5 text-xs text-blue-700 hover:bg-blue-50"
+            className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-emerald-300 border-slate-700"
             title="Attempt automatic document boundary detection"
           >
-            <HiOutlineSparkles className="w-4 h-4 text-amber-500" />
+            <HiOutlineSparkles className="w-4 h-4 text-emerald-400" />
             Auto-Detect
           </Button>
 
@@ -197,8 +289,8 @@ export default function DocumentCropper({
             size="sm"
             variant="secondary"
             onClick={onResetCorners}
-            className="flex items-center gap-1.5 text-xs"
-            title="Reset corners to full image frame"
+            className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+            title="Reset crop to full image bounds"
           >
             <HiOutlineArrowsExpand className="w-3.5 h-3.5" />
             Full Frame
@@ -208,10 +300,10 @@ export default function DocumentCropper({
             size="sm"
             variant="primary"
             onClick={onApplyCrop}
-            className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 font-bold"
+            className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-md shadow-emerald-600/30"
           >
             <HiOutlineCheck className="w-4 h-4" />
-            Apply Perspective Crop
+            Apply Crop
           </Button>
         </div>
       </div>
@@ -225,15 +317,15 @@ export default function DocumentCropper({
       >
         <canvas
           ref={canvasRef}
-          className="rounded shadow-xl cursor-crosshair max-w-full block"
+          className="rounded shadow-2xl cursor-crosshair max-w-full block"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
         />
 
-        {/* Real-time Magnifier Loupe during corner dragging */}
+        {/* Real-time Magnifier Loupe during dragging */}
         {magnifierInfo && imageRef.current && (
           <div
-            className="absolute top-4 right-4 pointer-events-none rounded-2xl border-2 border-white shadow-2xl overflow-hidden bg-slate-900 flex flex-col items-center"
+            className="absolute top-4 right-4 pointer-events-none rounded-2xl border-2 border-emerald-400 shadow-2xl overflow-hidden bg-slate-950 flex flex-col items-center z-30"
             style={{ width: 140, height: 140 }}
           >
             <div className="relative w-full h-full overflow-hidden">
@@ -242,24 +334,41 @@ export default function DocumentCropper({
                 alt="Magnifier"
                 className="absolute max-w-none"
                 style={{
-                  width: `${imageRef.current.naturalWidth * 2.5}px`,
-                  height: `${imageRef.current.naturalHeight * 2.5}px`,
-                  left: `${-magnifierInfo.x * 2.5 + 70}px`,
-                  top: `${-magnifierInfo.y * 2.5 + 70}px`,
+                  width: `${imageRef.current.naturalWidth * 2.2}px`,
+                  height: `${imageRef.current.naturalHeight * 2.2}px`,
+                  left: `${-magnifierInfo.x * 2.2 + 70}px`,
+                  top: `${-magnifierInfo.y * 2.2 + 70}px`,
                 }}
               />
               {/* Crosshair target in center of loupe */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-5 h-5 rounded-full border-2 border-blue-500 shadow-sm flex items-center justify-center">
-                  <div className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                <div className="w-6 h-6 rounded-full border border-emerald-400/80 shadow flex items-center justify-center">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 </div>
               </div>
             </div>
-            <div className="absolute bottom-1 bg-black/75 text-white font-mono text-[9px] px-2 py-0.5 rounded-full font-bold">
+            <div className="absolute bottom-1 bg-black/80 text-emerald-400 font-mono text-[9px] px-2 py-0.5 rounded-full font-bold border border-emerald-500/40">
               {Math.round(magnifierInfo.x)}, {Math.round(magnifierInfo.y)}
             </div>
           </div>
         )}
+      </div>
+
+      {/* Control Handle Guide Legend */}
+      <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-500 px-1 pt-0.5">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block border border-white"></span>
+            <span className="text-slate-700 font-medium">4 Corners (Position Angles)</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-teal-400 inline-block border border-slate-800"></span>
+            <span className="text-slate-700 font-medium">4 Middle Handles (Resize Edge)</span>
+          </span>
+        </div>
+        <span className="font-mono text-emerald-600 font-medium">
+          {imageRef.current ? `${imageRef.current.naturalWidth} × ${imageRef.current.naturalHeight} px` : ''}
+        </span>
       </div>
     </div>
   );

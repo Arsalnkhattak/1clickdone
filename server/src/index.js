@@ -5,6 +5,7 @@
  */
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
 import env from './config/env.js';
 import connectDB from './config/db.js';
 import errorHandler from './middleware/errorHandler.js';
@@ -37,6 +38,9 @@ app.use(express.json());
 
 // Parse URL-encoded request bodies
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static uploaded files
+app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
 
 // ──────────────────────────────────────
 // Routes

@@ -93,7 +93,7 @@ function computeOutputDimensions([tl, tr, br, bl]) {
 
 const dims = computeOutputDimensions(sorted);
 assert(dims.width > 600, `Calculated width (${dims.width}) should be > 600`);
-assert(dims(dims.height > 800), `Calculated height (${dims.height}) should be > 800`);
+assert(dims.height > 800, `Calculated height (${dims.height}) should be > 800`);
 assert(dims.aspectRatio < 1, 'Vertical document should have aspect ratio < 1 (portrait)');
 
 console.log(`✓ Computed dimensions: ${dims.width} x ${dims.height} px (Aspect: ${dims.aspectRatio.toFixed(2)})`);

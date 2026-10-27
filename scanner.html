@@ -1,0 +1,1667 @@
+<USER_REQUEST>
+not perform like that in our application,,first one we want but the 2,3 image is our real implemention ,,<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CamScan Auto AI & Deskew Studio</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Tesseract.js for OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+  <!-- jsPDF for PDF Export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+              900: '#064e3b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+    ::-webkit-scrollbar-thumb { background: #059669; border-radius: 4px; }
+    
+    .glass-panel {
+      background: rgba(30, 41, 59, 0.8);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .light .glass-panel {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    .canvas-container {
+      position: relative;
+      user-select: none;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col transition-colors duration-300 light:bg-slate-100 light:text-slate-900">
+
+  <!-- TOP HEADER -->
+  <header class="border-b border-slate-800 light:border-slate-200 glass-panel sticky top-0 z-40 px-4 py-3">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20 text-white font-bold text-xl">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="font-bold text-lg tracking-tight bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent light:from-emerald-700 light:to-teal-600">
+              CamScan Auto AI & Deskew Studio
+            </h1>
+            <span class="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+              8-Point Crop & Straighten
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 light:text-slate-500">Auto Edge Detection, Perspective Homography & Midpoint Edge Resize</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-3">
+        <div id="engineStatusBadge" class="hidden sm:flex items-center space-x-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
+          <i class="fa-solid fa-spinner fa-spin"></i>
+          <span>OpenCV WASM Engine Initializing...</span>
+        </div>
+
+        <button onclick="triggerFileInput()" class="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/30 transition flex items-center space-x-1.5">
+          <i class="fa-solid fa-upload"></i>
+          <span>Upload Image(s)</span>
+        </button>
+        <button onclick="openWebcamModal()" class="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 light:bg-slate-200 light:hover:bg-slate-300 text-slate-200 light:text-slate-800 transition flex items-center space-x-1.5">
+          <i class="fa-solid fa-camera"></i>
+          <span class="hidden md:inline">Camera</span>
+        </button>
+        <button id="themeToggleBtn" onclick="toggleTheme()" class="p-2 text-slate-400 hover:text-slate-200 light:text-slate-600 rounded-lg">
+          <i class="fa-solid fa-moon text-base"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTROL & FILTER BAR -->
+  <section class="bg-slate-900/90 light:bg-slate-200/90 border-b border-slate-800 light:border-slate-300 py-2.5 px-4 z-30">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+      
+      <!-- Preset Mode Selector -->
+      <div class="flex items-center space-x-2">
+        <span class="text-xs font-bold text-slate-400 light:text-slate-600 uppercase tracking-wider hidden sm:inline">Format Aspect:</span>
+        <div class="flex bg-slate-950 light:bg-slate-300 p-1 rounded-xl border border-slate-800 light:border-slate-400 text-xs">
+          <button onclick="setPreset('auto')" id="preset-auto" class="preset-btn px-3 py-1 rounded-lg font-bold bg-emerald-600 text-white shadow transition">
+            <i class="fa-solid fa-robot mr-1"></i> Auto Free
+          </button>
+          <button onclick="setPreset('a4')" id="preset-a4" class="preset-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            <i class="fa-solid fa-file-lines mr-1"></i> A4 Document
+          </button>
+          <button onclick="setPreset('cnic')" id="preset-cnic" class="preset-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            <i class="fa-solid fa-id-card mr-1"></i> CNIC Card (1.58:1)
+          </button>
+          <button onclick="setPreset('receipt')" id="preset-receipt" class="preset-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            <i class="fa-solid fa-receipt mr-1"></i> Receipt
+          </button>
+        </div>
+      </div>
+
+      <!-- Magic Filters -->
+      <div class="flex items-center space-x-2">
+        <span class="text-xs font-bold text-slate-400 light:text-slate-600 uppercase tracking-wider hidden sm:inline">Filter Mode:</span>
+        <div class="flex bg-slate-950 light:bg-slate-300 p-1 rounded-xl border border-slate-800 light:border-slate-400 text-xs">
+          <button onclick="setFilter('magic')" id="filter-magic" class="filter-btn px-3 py-1 rounded-lg font-bold bg-emerald-600 text-white shadow transition">
+            <i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Magic Color
+          </button>
+          <button onclick="setFilter('bw')" id="filter-bw" class="filter-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            B&W Clean
+          </button>
+          <button onclick="setFilter('gray')" id="filter-gray" class="filter-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            Grayscale
+          </button>
+          <button onclick="setFilter('original')" id="filter-original" class="filter-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition">
+            Original
+          </button>
+        </div>
+      </div>
+
+      <!-- Demo Samples -->
+      <div class="flex items-center space-x-2">
+        <button onclick="loadSampleDoc()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20 transition flex items-center space-x-1">
+          <i class="fa-solid fa-file-contract"></i>
+          <span>Sample Proposal Sheet</span>
+        </button>
+        <button onclick="loadSampleCNIC()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-teal-500/10 text-teal-300 border border-teal-500/30 hover:bg-teal-500/20 transition flex items-center space-x-1">
+          <i class="fa-solid fa-id-card"></i>
+          <span>Sample CNIC</span>
+        </button>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 flex flex-col justify-between space-y-6">
+
+    <input type="file" id="fileInput" accept="image/*" multiple class="hidden" onchange="handleFileSelect(event)">
+
+    <!-- Loader Overlay -->
+    <div id="processingLoader" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex flex-col items-center justify-center space-y-4">
+      <div class="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+      <div class="text-center">
+        <h3 id="loaderTitle" class="text-lg font-bold text-white">Auto Detecting Document Boundaries...</h3>
+        <p id="loaderSub" class="text-xs text-emerald-400">Analyzing Canny edge contours & deskew angles</p>
+      </div>
+    </div>
+
+    <!-- EMPTY UPLOAD STATE -->
+    <section id="emptyStateSection" class="my-auto space-y-6 max-w-3xl mx-auto w-full">
+      <div class="text-center space-y-2">
+        <h2 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-white light:text-slate-900">
+          Auto Document Scanner & Straightener
+        </h2>
+        <p class="text-sm text-slate-400 light:text-slate-600">
+          Upload any document or card photo. The system auto-detects corners, deskews crooked tilt, and gives you 8 control handles (corners + edge midpoints) to easily resize borders.
+        </p>
+      </div>
+
+      <div id="dropZone" 
+           onclick="triggerFileInput()"
+           ondragover="handleDragOver(event)"
+           ondragleave="handleDragLeave(event)"
+           ondrop="handleDrop(event)"
+           class="border-2 border-dashed border-emerald-500/40 light:border-emerald-600/40 rounded-3xl p-10 sm:p-14 text-center bg-slate-900/40 hover:bg-slate-800/60 light:bg-slate-50 light:hover:bg-slate-100 transition cursor-pointer group shadow-2xl relative overflow-hidden">
+        
+        <div class="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white flex items-center justify-center text-3xl group-hover:scale-110 transition duration-300 shadow-xl shadow-emerald-500/20">
+          <i class="fa-solid fa-file-circle-check"></i>
+        </div>
+
+        <h3 class="mt-5 text-lg font-bold text-slate-100 light:text-slate-800">
+          Drop Document Photos Here
+        </h3>
+        <p class="mt-1 text-xs text-slate-400 light:text-slate-500">
+          Supports JPG, PNG, WEBP, BMP (Single or Batch Multi-Page Scan)
+        </p>
+
+        <div class="mt-6 flex flex-wrap justify-center gap-3">
+          <span class="px-5 py-2.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 flex items-center space-x-2">
+            <i class="fa-solid fa-folder-open"></i>
+            <span>Browse Files</span>
+          </span>
+          <button type="button" onclick="event.stopPropagation(); loadSampleDoc();" class="px-5 py-2.5 text-xs font-bold rounded-xl bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20">
+            <i class="fa-solid fa-file-contract mr-1"></i> Try Sample Proposal
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACTIVE WORKSPACE DUAL VIEW -->
+    <section id="scanWorkspaceSection" class="hidden space-y-5">
+      
+      <!-- TOOLBAR FOR STRAIGHTENING & ROTATION -->
+      <div class="bg-slate-900/80 light:bg-slate-200 p-3.5 rounded-2xl border border-slate-800 light:border-slate-300 flex flex-wrap items-center justify-between gap-3">
+        
+        <!-- Document Angle & Rotation Controls -->
+        <div class="flex items-center flex-wrap gap-2">
+          <span class="text-xs font-bold text-slate-400 light:text-slate-700 uppercase tracking-wider flex items-center gap-1">
+            <i class="fa-solid fa-rotate text-emerald-400"></i> Straighten / Deskew:
+          </span>
+
+          <button onclick="autoStraightenDoc()" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow flex items-center space-x-1">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            <span>Auto Straighten</span>
+          </button>
+
+          <button onclick="rotateImage(-90)" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 light:bg-slate-300 text-slate-200 light:text-slate-800">
+            <i class="fa-solid fa-rotate-left"></i> -90°
+          </button>
+
+          <button onclick="rotateImage(90)" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 light:bg-slate-300 text-slate-200 light:text-slate-800">
+            <i class="fa-solid fa-rotate-right"></i> +90°
+          </button>
+
+          <!-- Fine Angle Slider -->
+          <div class="flex items-center space-x-2 bg-slate-950 light:bg-slate-300 px-3 py-1 rounded-xl border border-slate-800 light:border-slate-400">
+            <span class="text-[11px] font-mono text-slate-400" id="angleDegText">0°</span>
+            <input type="range" id="fineAngleSlider" min="-45" max="45" value="0" step="0.5" oninput="onFineAngleChange(this.value)" class="w-24 accent-emerald-500 cursor-pointer">
+            <button onclick="resetFineAngle()" class="text-[10px] text-slate-500 hover:text-emerald-400">Reset</button>
+          </div>
+        </div>
+
+        <!-- Quick Reset Handles -->
+        <div class="flex items-center space-x-2">
+          <button onclick="autoDetectCorners()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 light:bg-slate-300 text-emerald-400 flex items-center space-x-1">
+            <i class="fa-solid fa-crosshairs"></i>
+            <span>Re-Detect Crop</span>
+          </button>
+          <button onclick="resetCornersToFullFrame()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 light:bg-slate-300 text-slate-300 light:text-slate-800">
+            Full Inset Box
+          </button>
+        </div>
+
+      </div>
+
+      <!-- MAIN DUAL PANEL GRID -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        <!-- LEFT PANEL: Interactive 8-Handle Crop View -->
+        <div class="bg-slate-900/80 light:bg-slate-200/70 border border-slate-800 light:border-slate-300 rounded-2xl p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-800 light:border-slate-300 pb-2">
+            <span class="text-xs font-bold text-slate-300 light:text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-hand-pointer text-emerald-400"></i>
+              Original Source (Drag Corners & Middle Edge Handles)
+            </span>
+            <span class="text-[11px] font-mono text-slate-500" id="origDimText">0 x 0 px</span>
+          </div>
+
+          <!-- Canvas Container with Touch/Mouse Handle Events -->
+          <div class="relative min-h-[400px] max-h-[60vh] flex items-center justify-center bg-slate-950 light:bg-slate-300 rounded-xl overflow-hidden p-2">
+            <div id="interactiveCanvasWrapper" class="canvas-container inline-block relative">
+              <canvas id="interactiveCanvas" class="block cursor-crosshair max-w-full max-h-[55vh] h-auto object-contain rounded shadow-lg"></canvas>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between text-[11px] text-slate-400 light:text-slate-500">
+            <span class="flex items-center gap-1">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> 4 Corners
+            </span>
+            <span class="flex items-center gap-1">
+              <span class="w-2.5 h-2.5 rounded-full bg-teal-300 inline-block"></span> 4 Edge Middle Handles (Resize Edge)
+            </span>
+            <span id="dragModeText" class="font-mono text-emerald-400">Drag points to crop</span>
+          </div>
+        </div>
+
+        <!-- RIGHT PANEL: Perfectly Straightened & Warped Scan Output -->
+        <div class="bg-slate-900/80 light:bg-slate-200/70 border border-slate-800 light:border-slate-300 rounded-2xl p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-800 light:border-slate-300 pb-2">
+            <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-circle-check"></i>
+              Straightened Scanned Output ("Sedaa Scan")
+            </span>
+            <span class="text-[11px] font-mono text-slate-500" id="outputDimText">0 x 0 px</span>
+          </div>
+
+          <div class="relative min-h-[400px] max-h-[60vh] flex items-center justify-center bg-slate-950 light:bg-slate-300 rounded-xl overflow-hidden p-2">
+            <canvas id="finalOutputCanvas" class="max-w-full max-h-[55vh] h-auto object-contain rounded shadow-2xl"></canvas>
+          </div>
+
+          <!-- Download & Export Bar -->
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <div class="flex space-x-2">
+              <button onclick="downloadOutput('jpg')" class="px-3 py-2 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center space-x-1.5">
+                <i class="fa-solid fa-file-image text-emerald-400"></i>
+                <span>JPG</span>
+              </button>
+              <button onclick="downloadOutput('png')" class="px-3 py-2 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center space-x-1.5">
+                <i class="fa-solid fa-image text-teal-400"></i>
+                <span>PNG</span>
+              </button>
+              <button onclick="downloadPDF()" class="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 flex items-center space-x-1.5">
+                <i class="fa-solid fa-file-pdf"></i>
+                <span>Export PDF</span>
+              </button>
+            </div>
+
+            <button onclick="openOCRModal()" class="px-3.5 py-2 text-xs font-bold rounded-xl bg-teal-500/10 text-teal-300 border border-teal-500/30 hover:bg-teal-500/20 flex items-center space-x-1.5">
+              <i class="fa-solid fa-font"></i>
+              <span>Extract Text (OCR)</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- BATCH QUEUE TRAY -->
+      <div id="batchTraySection" class="hidden bg-slate-900/90 light:bg-white border border-slate-800 light:border-slate-300 rounded-2xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-layer-group text-emerald-400"></i>
+            <h4 class="text-xs font-bold text-slate-200 light:text-slate-800 uppercase tracking-wider">
+              Batch Queue (<span id="batchCountText">0</span> Documents)
+            </h4>
+          </div>
+          <button onclick="downloadBatchPDF()" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow">
+            <i class="fa-solid fa-file-pdf mr-1"></i> Multi-Page PDF Download
+          </button>
+        </div>
+
+        <div id="batchThumbnails" class="flex items-center space-x-3 overflow-x-auto pb-2"></div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- OCR MODAL -->
+  <div id="ocrModal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-font text-emerald-400"></i>
+          Extracted Document Text (OCR)
+        </h3>
+        <button onclick="closeOCRModal()" class="text-slate-400 hover:text-white p-1">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <div class="flex items-center justify-between">
+          <select id="ocrLang" class="bg-slate-800 text-slate-200 text-xs rounded-lg px-3 py-1.5 border border-slate-700 focus:outline-none">
+            <option value="eng">English Text</option>
+            <option value="urd">Urdu Script</option>
+          </select>
+          <button id="btnRunOCR" onclick="executeOCR()" class="px-4 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow">
+            <i class="fa-solid fa-bolt mr-1"></i> Re-Run OCR
+          </button>
+        </div>
+
+        <div id="ocrProgressBox" class="hidden space-y-1">
+          <div class="flex justify-between text-xs text-slate-400 font-medium">
+            <span id="ocrStatusText">Recognizing text...</span>
+            <span id="ocrPercentText">0%</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div id="ocrProgressBar" class="bg-emerald-500 h-full w-0 transition-all duration-300"></div>
+          </div>
+        </div>
+
+        <textarea id="ocrTextOutput" rows="8" placeholder="Recognized text will display here..." class="w-full bg-slate-950 text-slate-200 p-3.5 rounded-xl border border-slate-800 text-xs font-mono focus:outline-none focus:border-emerald-500 leading-relaxed"></textarea>
+      </div>
+
+      <div class="flex items-center justify-between pt-2">
+        <span class="text-xs text-slate-500" id="ocrWordCount">0 words</span>
+        <div class="flex space-x-2">
+          <button onclick="copyOCRText()" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200">
+            <i class="fa-regular fa-copy mr-1"></i> Copy Text
+          </button>
+          <button onclick="downloadOCRTXT()" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200">
+            <i class="fa-solid fa-download mr-1"></i> Save TXT
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WEBCAM MODAL -->
+  <div id="webcamModal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-5 space-y-4 shadow-2xl relative">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-camera text-emerald-400"></i>
+          Webcam Live Capture
+        </h3>
+        <button onclick="closeWebcamModal()" class="text-slate-400 hover:text-white p-1">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <div class="relative bg-black rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+        <video id="webcamVideo" autoplay playsinline class="w-full h-full object-cover"></video>
+        <div class="absolute inset-8 border-2 border-dashed border-emerald-400/70 rounded-lg pointer-events-none flex items-center justify-center">
+          <span class="bg-black/60 text-emerald-400 text-xs px-3 py-1 rounded-full">Place document inside guide</span>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between">
+        <select id="cameraSelect" onchange="switchCameraStream()" class="bg-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2 border border-slate-700 focus:outline-none">
+          <option value="">Default Camera</option>
+        </select>
+        <button onclick="captureWebcamFrame()" class="px-6 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg flex items-center space-x-2">
+          <i class="fa-solid fa-circle text-red-500"></i>
+          <span>Capture & Scan</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+    <div class="px-4 py-3 rounded-xl bg-slate-900 border border-emerald-500/40 text-emerald-300 text-xs font-medium shadow-2xl flex items-center space-x-2.5">
+      <i id="toastIcon" class="fa-solid fa-circle-check text-base"></i>
+      <span id="toastMsg">Notification</span>
+    </div>
+  </div>
+
+  <!-- LOAD OPENCV.JS -->
+  <script>
+    let cvReady = false;
+    function onOpenCvReady() {
+      cvReady = true;
+      const badge = document.getElementById('engineStatusBadge');
+      badge.className = "hidden sm:flex items-center space-x-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold";
+      badge.innerHTML = `<i class="fa-solid fa-circle-check"></i><span>OpenCV.js Engine Ready</span>`;
+    }
+  </script>
+  <script async src="https://docs.opencv.org/4.7.0/opencv.js" onload="onOpenCvReady()"></script>
+
+  <!-- MAIN JAVASCRIPT LOGIC -->
+  <script>
+    // GLOBAL STATE
+    let batchQueue = [];
+    let activeBatchIndex = 0;
+
+    let baseRawImage = new Image(); // The original loaded image
+    let currentRotatedCanvas = document.createElement('canvas'); // Base image after rotation/straightening
+    
+    // Normalized 4 corners [TL, TR, BR, BL] (0..1 range relative to rotated canvas)
+    let corners = [
+      { x: 0.08, y: 0.08 },
+      { x: 0.92, y: 0.08 },
+      { x: 0.92, y: 0.92 },
+      { x: 0.08, y: 0.92 }
+    ];
+
+    let baseRotationDeg = 0; // Cumulative 90-degree steps
+    let fineAngleDeg = 0;   // Fine sub-degree angle adjustment (-45 to +45)
+    
+    let activePreset = 'auto'; // 'auto', 'a4', 'cnic', 'receipt'
+    let activeFilter = 'magic'; // 'magic', 'bw', 'gray', 'original'
+
+    // Interactive Canvas references
+    const interactiveCanvas = document.getElementById('interactiveCanvas');
+    const interactiveCtx = interactiveCanvas.getContext('2d');
+    const finalOutputCanvas = document.getElementById('finalOutputCanvas');
+    const finalCtx = finalOutputCanvas.getContext('2d');
+
+    // 8-Point Dragging state
+    // 0: TL, 1: TR, 2: BR, 3: BL (Corners)
+    // 4: Top-Middle, 5: Right-Middle, 6: Bottom-Middle, 7: Left-Middle (Edge Handles)
+    let activeHandleIdx = -1;
+    let isDragging = false;
+    let dragStartPos = { x: 0, y: 0 };
+    let initialCornersOnDrag = [];
+    let webcamStream = null;
+
+    window.onload = function() {
+      setupCanvasPointerEvents();
+    };
+
+    // ================= ROTATION & AUTO-STRAIGHTENING ("SEDAA KERNA") =================
+    function rotateImage(stepDeg) {
+      baseRotationDeg = (baseRotationDeg + stepDeg) % 360;
+      rebuildRotatedCanvasAndScan();
+      showToast(`Rotated ${stepDeg > 0 ? '+' : ''}${stepDeg}°`);
+    }
+
+    function onFineAngleChange(val) {
+      fineAngleDeg = parseFloat(val);
+      document.getElementById('angleDegText').innerText = `${fineAngleDeg}°`;
+      rebuildRotatedCanvasAndScan();
+    }
+
+    function resetFineAngle() {
+      fineAngleDeg = 0;
+      document.getElementById('fineAngleSlider').value = 0;
+      document.getElementById('angleDegText').innerText = `0°`;
+      rebuildRotatedCanvasAndScan();
+    }
+
+    function rebuildRotatedCanvasAndScan() {
+      if (!baseRawImage.src) return;
+
+      const totalAngleRad = ((baseRotationDeg + fineAngleDeg) * Math.PI) / 180;
+      const cos = Math.abs(Math.cos(totalAngleRad));
+      const sin = Math.abs(Math.sin(totalAngleRad));
+
+      const origW = baseRawImage.width;
+      const origH = baseRawImage.height;
+
+      // Calculate new bounding canvas dimensions for angled image
+      const newW = Math.round(origW * cos + origH * sin);
+      const newH = Math.round(origW * sin + origH * cos);
+
+      currentRotatedCanvas.width = newW;
+      currentRotatedCanvas.height = newH;
+      const ctx = currentRotatedCanvas.getContext('2d');
+
+      ctx.clearRect(0, 0, newW, newH);
+      ctx.save();
+      ctx.translate(newW / 2, newH / 2);
+      ctx.rotate(totalAngleRad);
+      ctx.drawImage(baseRawImage, -origW / 2, -origH / 2);
+      ctx.restore();
+
+      renderInteractiveCanvas();
+      applyWarpAndFilter();
+    }
+
+    // Auto-detect angle of document top edge to deskew
+    function autoStraightenDoc() {
+      if (!cvReady || typeof cv === 'undefined') {
+        showToast('OpenCV Engine required for auto deskew', 'error');
+        return;
+      }
+
+      showLoader(true, "Auto Deskewing Document...", "Calculating horizontal document edge angle");
+
+      setTimeout(() => {
+        try {
+          // Calculate angle between top-left and top-right corners
+          const w = currentRotatedCanvas.width;
+          const h = currentRotatedCanvas.height;
+          const p1 = { x: corners[0].x * w, y: corners[0].y * h };
+          const p2 = { x: corners[1].x * w, y: corners[1].y * h };
+
+          const dy = p2.y - p1.y;
+          const dx = p2.x - p1.x;
+          let angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+          if (Math.abs(angleDeg) > 0.2) {
+            fineAngleDeg = -angleDeg;
+            document.getElementById('fineAngleSlider').value = fineAngleDeg.toFixed(1);
+            document.getElementById('angleDegText').innerText = `${fineAngleDeg.toFixed(1)}°`;
+            rebuildRotatedCanvasAndScan();
+            showToast(`Document deskewed by ${(-angleDeg).toFixed(1)}°!`);
+          } else {
+            showToast('Document is already straight!');
+          }
+        } catch (e) {
+          showToast('Straightening completed');
+        } finally {
+          showLoader(false);
+        }
+      }, 150);
+    }
+
+    // ================= 8-POINT INTERACTIVE CROP CANVAS =================
+    function get8ControlPoints(w, h) {
+      // 4 Corners
+      const c0 = { x: corners[0].x * w, y: corners[0].y * h }; // TL
+      const c1 = { x: corners[1].x * w, y: corners[1].y * h }; // TR
+      const c2 = { x: corners[2].x * w, y: corners[2].y * h }; // BR
+      const c3 = { x: corners[3].x * w, y: corners[3].y * h }; // BL
+
+      // 4 Edge Midpoints ("Dermyan me resize handle")
+      const tm = { x: (c0.x + c1.x) / 2, y: (c0.y + c1.y) / 2 }; // Top-Middle
+      const rm = { x: (c1.x + c2.x) / 2, y: (c1.y + c2.y) / 2 }; // Right-Middle
+      const bm = { x: (c2.x + c3.x) / 2, y: (c2.y + c3.y) / 2 }; // Bottom-Middle
+      const lm = { x: (c3.x + c0.x) / 2, y: (c3.y + c0.y) / 2 }; // Left-Middle
+
+      return [c0, c1, c2, c3, tm, rm, bm, lm];
+    }
+
+    function renderInteractiveCanvas() {
+      const w = currentRotatedCanvas.width;
+      const h = currentRotatedCanvas.height;
+
+      document.getElementById('origDimText').innerText = `${w} x ${h} px`;
+
+      const maxDispW = 800;
+      const maxDispH = 550;
+      const scale = Math.min(maxDispW / w, maxDispH / h, 1);
+
+      interactiveCanvas.width = w * scale;
+      interactiveCanvas.height = h * scale;
+
+      const dispW = interactiveCanvas.width;
+      const dispH = interactiveCanvas.height;
+
+      // Draw base photo
+      interactiveCtx.drawImage(currentRotatedCanvas, 0, 0, dispW, dispH);
+
+      const pts = get8ControlPoints(dispW, dispH);
+
+      // Dark overlay outside selected quad
+      interactiveCtx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+      interactiveCtx.fillRect(0, 0, dispW, dispH);
+
+      // Cutout selected quad
+      interactiveCtx.save();
+      interactiveCtx.beginPath();
+      interactiveCtx.moveTo(pts[0].x, pts[0].y);
+      interactiveCtx.lineTo(pts[1].x, pts[1].y);
+      interactiveCtx.lineTo(pts[2].x, pts[2].y);
+      interactiveCtx.lineTo(pts[3].x, pts[3].y);
+      interactiveCtx.closePath();
+      interactiveCtx.clip();
+      interactiveCtx.drawImage(currentRotatedCanvas, 0, 0, dispW, dispH);
+      interactiveCtx.restore();
+
+      // Stroke Polygon Green Edge Border
+      interactiveCtx.strokeStyle = '#10b981';
+      interactiveCtx.lineWidth = 2.5;
+      interactiveCtx.beginPath();
+      interactiveCtx.moveTo(pts[0].x, pts[0].y);
+      interactiveCtx.lineTo(pts[1].x, pts[1].y);
+      interactiveCtx.lineTo(pts[2].x, pts[2].y);
+      interactiveCtx.lineTo(pts[3].x, pts[3].y);
+      interactiveCtx.closePath();
+      interactiveCtx.stroke();
+
+      // Draw 4 Corner Handles (Green Circle)
+      for (let i = 0; i < 4; i++) {
+        interactiveCtx.beginPath();
+        interactiveCtx.arc(pts[i].x, pts[i].y, 8, 0, 2 * Math.PI);
+        interactiveCtx.fillStyle = '#10b981';
+        interactiveCtx.fill();
+        interactiveCtx.lineWidth = 2;
+        interactiveCtx.strokeStyle = '#ffffff';
+        interactiveCtx.stroke();
+      }
+
+      // Draw 4 Edge Middle Handles (Teal Square / Circle - "Dermyan me resize")
+      for (let i = 4; i < 8; i++) {
+        interactiveCtx.beginPath();
+        interactiveCtx.arc(pts[i].x, pts[i].y, 6.5, 0, 2 * Math.PI);
+        interactiveCtx.fillStyle = '#2dd4bf'; // Teal
+        interactiveCtx.fill();
+        interactiveCtx.lineWidth = 2;
+        interactiveCtx.strokeStyle = '#0f172a';
+        interactiveCtx.stroke();
+      }
+
+      // Render Magnifying Loupe if dragging
+      if (isDragging && activeHandleIdx !== -1) {
+        renderMagnifierLoupe(pts[activeHandleIdx], dispW, dispH);
+      }
+    }
+
+    // MAGNIFYING LOUPE CROSSHAIR
+    function renderMagnifierLoupe(targetPt, dispW, dispH) {
+      const loupeRadius = 45;
+      const zoom = 2.2;
+
+      // Place loupe above user finger/cursor
+      let loupeX = targetPt.x;
+      let loupeY = targetPt.y - 60;
+      if (loupeY < loupeRadius + 10) loupeY = targetPt.y + 60;
+
+      interactiveCtx.save();
+      interactiveCtx.beginPath();
+      interactiveCtx.arc(loupeX, loupeY, loupeRadius, 0, 2 * Math.PI);
+      interactiveCtx.clip();
+
+      interactiveCtx.fillStyle = '#000';
+      interactiveCtx.fillRect(loupeX - loupeRadius, loupeY - loupeRadius, loupeRadius * 2, loupeRadius * 2);
+
+      // Draw zoomed image portion
+      const srcW = (loupeRadius * 2) / zoom;
+      const srcH = (loupeRadius * 2) / zoom;
+      const srcX = (targetPt.x / dispW) * currentRotatedCanvas.width - srcW / 2;
+      const srcY = (targetPt.y / dispH) * currentRotatedCanvas.height - srcH / 2;
+
+      interactiveCtx.drawImage(
+        currentRotatedCanvas,
+        srcX, srcY, srcW, srcH,
+        loupeX - loupeRadius, loupeY - loupeRadius, loupeRadius * 2, loupeRadius * 2
+      );
+
+      // Loupe Crosshair
+      interactiveCtx.strokeStyle = '#10b981';
+      interactiveCtx.lineWidth = 1.5;
+      interactiveCtx.beginPath();
+      interactiveCtx.moveTo(loupeX - 12, loupeY);
+      interactiveCtx.lineTo(loupeX + 12, loupeY);
+      interactiveCtx.moveTo(loupeX, loupeY - 12);
+      interactiveCtx.lineTo(loupeX, loupeY + 12);
+      interactiveCtx.stroke();
+
+      interactiveCtx.restore();
+
+      // Outer Ring
+      interactiveCtx.beginPath();
+      interactiveCtx.arc(loupeX, loupeY, loupeRadius, 0, 2 * Math.PI);
+      interactiveCtx.lineWidth = 3;
+      interactiveCtx.strokeStyle = '#ffffff';
+      interactiveCtx.stroke();
+    }
+
+    // HANDLE DRAGGING LOGIC (SUPPORTING 4 CORNERS + 4 EDGE MIDPOINTS)
+    function setupCanvasPointerEvents() {
+      interactiveCanvas.addEventListener('mousedown', onPointerDown);
+      interactiveCanvas.addEventListener('mousemove', onPointerMove);
+      window.addEventListener('mouseup', onPointerUp);
+
+      interactiveCanvas.addEventListener('touchstart', onPointerDown, { passive: false });
+      interactiveCanvas.addEventListener('touchmove', onPointerMove, { passive: false });
+      window.addEventListener('touchend', onPointerUp);
+    }
+
+    function getCanvasCoords(e) {
+      const rect = interactiveCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) * (interactiveCanvas.width / rect.width),
+        y: (clientY - rect.top) * (interactiveCanvas.height / rect.height)
+      };
+    }
+
+    function onPointerDown(e) {
+      e.preventDefault();
+      const pos = getCanvasCoords(e);
+      const pts = get8ControlPoints(interactiveCanvas.width, interactiveCanvas.height);
+
+      activeHandleIdx = -1;
+      let minDist = 30; // Touch hit radius
+
+      pts.forEach((pt, idx) => {
+        const dist = Math.hypot(pt.x - pos.x, pt.y - pos.y);
+        if (dist < minDist) {
+          minDist = dist;
+          activeHandleIdx = idx;
+        }
+      });
+
+      if (activeHandleIdx !== -1) {
+        isDragging = true;
+        dragStartPos = pos;
+        initialCornersOnDrag = JSON.parse(JSON.stringify(corners));
+        document.getElementById('dragModeText').innerText = 
+          activeHandleIdx < 4 ? `Dragging Corner ${activeHandleIdx + 1}` : `Resizing Middle Edge Handle`;
+      }
+    }
+
+    function onPointerMove(e) {
+      if (!isDragging || activeHandleIdx === -1) return;
+      e.preventDefault();
+
+      const pos = getCanvasCoords(e);
+      const dispW = interactiveCanvas.width;
+      const dispH = interactiveCanvas.height;
+
+      const dxNorm = (pos.x - dragStartPos.x) / dispW;
+      const dyNorm = (pos.y - dragStartPos.y) / dispH;
+
+      if (activeHandleIdx < 4) {
+        // Dragging individual corner directly
+        corners[activeHandleIdx] = {
+          x: Math.max(0, Math.min(1, initialCornersOnDrag[activeHandleIdx].x + dxNorm)),
+          y: Math.max(0, Math.min(1, initialCornersOnDrag[activeHandleIdx].y + dyNorm))
+        };
+      } else {
+        // DRAGGING MIDDLE EDGE HANDLE ("Dermyan me resize")
+        // 4: Top-Middle -> Adjusts TL (0) & TR (1)
+        // 5: Right-Middle -> Adjusts TR (1) & BR (2)
+        // 6: Bottom-Middle -> Adjusts BR (2) & BL (3)
+        // 7: Left-Middle -> Adjusts BL (3) & TL (0)
+        if (activeHandleIdx === 4) { // Top Edge
+          corners[0].y = Math.max(0, Math.min(corners[3].y - 0.05, initialCornersOnDrag[0].y + dyNorm));
+          corners[1].y = Math.max(0, Math.min(corners[2].y - 0.05, initialCornersOnDrag[1].y + dyNorm));
+          corners[0].x = Math.max(0, Math.min(corners[1].x - 0.05, initialCornersOnDrag[0].x + dxNorm));
+          corners[1].x = Math.max(0, Math.min(1, initialCornersOnDrag[1].x + dxNorm));
+        } else if (activeHandleIdx === 5) { // Right Edge
+          corners[1].x = Math.max(corners[0].x + 0.05, Math.min(1, initialCornersOnDrag[1].x + dxNorm));
+          corners[2].x = Math.max(corners[3].x + 0.05, Math.min(1, initialCornersOnDrag[2].x + dxNorm));
+          corners[1].y = Math.max(0, Math.min(corners[2].y - 0.05, initialCornersOnDrag[1].y + dyNorm));
+          corners[2].y = Math.max(0, Math.min(1, initialCornersOnDrag[2].y + dyNorm));
+        } else if (activeHandleIdx === 6) { // Bottom Edge
+          corners[2].y = Math.max(corners[1].y + 0.05, Math.min(1, initialCornersOnDrag[2].y + dyNorm));
+          corners[3].y = Math.max(corners[0].y + 0.05, Math.min(1, initialCornersOnDrag[3].y + dyNorm));
+          corners[2].x = Math.max(corners[3].x + 0.05, Math.min(1, initialCornersOnDrag[2].x + dxNorm));
+          corners[3].x = Math.max(0, Math.min(corners[2].x - 0.05, initialCornersOnDrag[3].x + dxNorm));
+        } else if (activeHandleIdx === 7) { // Left Edge
+          corners[0].x = Math.max(0, Math.min(corners[1].x - 0.05, initialCornersOnDrag[0].x + dxNorm));
+          corners[3].x = Math.max(0, Math.min(corners[2].x - 0.05, initialCornersOnDrag[3].x + dxNorm));
+          corners[0].y = Math.max(0, Math.min(corners[3].y - 0.05, initialCornersOnDrag[0].y + dyNorm));
+          corners[3].y = Math.max(0, Math.min(1, initialCornersOnDrag[3].y + dyNorm));
+        }
+      }
+
+      renderInteractiveCanvas();
+      applyWarpAndFilter();
+    }
+
+    function onPointerUp() {
+      if (isDragging) {
+        isDragging = false;
+        activeHandleIdx = -1;
+        document.getElementById('dragModeText').innerText = "Drag points to crop";
+        renderInteractiveCanvas();
+      }
+    }
+
+    // ================= HOMOGRAPHY PERSPECTIVE WARP & MAGIC COLOR =================
+    function applyWarpAndFilter() {
+      const w = currentRotatedCanvas.width;
+      const h = currentRotatedCanvas.height;
+
+      const srcPts = corners.map(p => ({ x: p.x * w, y: p.y * h }));
+
+      // Destination target rectangle dimensions
+      let targetW = Math.round(Math.max(
+        Math.hypot(srcPts[1].x - srcPts[0].x, srcPts[1].y - srcPts[0].y),
+        Math.hypot(srcPts[2].x - srcPts[3].x, srcPts[2].y - srcPts[3].y)
+      ));
+      let targetH = Math.round(Math.max(
+        Math.hypot(srcPts[3].x - srcPts[0].x, srcPts[3].y - srcPts[0].y),
+        Math.hypot(srcPts[2].x - srcPts[1].x, srcPts[2].y - srcPts[1].y)
+      ));
+
+      // Preset Aspect Ratio Forcing
+      if (activePreset === 'a4') {
+        if (targetW >= targetH) targetH = Math.round(targetW / 1.414);
+        else targetW = Math.round(targetH / 1.414);
+      } else if (activePreset === 'cnic') {
+        if (targetW >= targetH) targetH = Math.round(targetW / 1.586);
+        else targetW = Math.round(targetH / 1.586);
+      }
+
+      document.getElementById('outputDimText').innerText = `${targetW} x ${targetH} px`;
+
+      const dstPts = [
+        { x: 0, y: 0 },
+        { x: targetW, y: 0 },
+        { x: targetW, y: targetH },
+        { x: 0, y: targetH }
+      ];
+
+      const H = solveHomographyMatrix(srcPts, dstPts);
+      if (!H) return;
+
+      const warpCanvas = document.createElement('canvas');
+      warpCanvas.width = targetW;
+      warpCanvas.height = targetH;
+      const warpCtx = warpCanvas.getContext('2d');
+
+      const srcCtx = currentRotatedCanvas.getContext('2d');
+      const srcData = srcCtx.getImageData(0, 0, w, h);
+      const dstData = warpCtx.createImageData(targetW, targetH);
+
+      const sData = srcData.data;
+      const dData = dstData.data;
+
+      // Inverse Mapping Warp
+      for (let v = 0; v < targetH; v++) {
+        for (let u = 0; u < targetW; u++) {
+          let den = H[2][0] * u + H[2][1] * v + H[2][2];
+          let sx = (H[0][0] * u + H[0][1] * v + H[0][2]) / den;
+          let sy = (H[1][0] * u + H[1][1] * v + H[1][2]) / den;
+
+          if (sx >= 0 && sx < w - 1 && sy >= 0 && sy < h - 1) {
+            let x1 = Math.floor(sx);
+            let y1 = Math.floor(sy);
+            let dx = sx - x1;
+            let dy = sy - y1;
+
+            let idx11 = (y1 * w + x1) * 4;
+            let idx21 = (y1 * w + (x1 + 1)) * 4;
+            let idx12 = ((y1 + 1) * w + x1) * 4;
+            let idx22 = ((y1 + 1) * w + (x1 + 1)) * 4;
+
+            let dstIdx = (v * targetW + u) * 4;
+
+            for (let c = 0; c < 3; c++) {
+              let val = (1 - dx) * (1 - dy) * sData[idx11 + c] +
+                        dx * (1 - dy) * sData[idx21 + c] +
+                        (1 - dx) * dy * sData[idx12 + c] +
+                        dx * dy * sData[idx22 + c];
+              dData[dstIdx + c] = val;
+            }
+            dData[dstIdx + 3] = 255;
+          }
+        }
+      }
+      warpCtx.putImageData(dstData, 0, 0);
+
+      // Render Final Filters
+      finalOutputCanvas.width = targetW;
+      finalOutputCanvas.height = targetH;
+
+      const finalImgData = warpCtx.getImageData(0, 0, targetW, targetH);
+      const data = finalImgData.data;
+
+      for (let i = 0; i < data.length; i += 4) {
+        let r = data[i];
+        let g = data[i + 1];
+        let b = data[i + 2];
+
+        let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        if (activeFilter === 'magic') {
+          // CamScanner Magic Color Contrast Sharpener
+          if (lum > 115) {
+            r = Math.min(255, r * 1.25 + 10);
+            g = Math.min(255, g * 1.25 + 10);
+            b = Math.min(255, b * 1.25 + 10);
+          } else {
+            r = Math.max(0, r * 0.7);
+            g = Math.max(0, g * 0.7);
+            b = Math.max(0, b * 0.7);
+          }
+        } else if (activeFilter === 'bw') {
+          const thresh = lum > 128 ? 255 : 0;
+          r = g = b = thresh;
+        } else if (activeFilter === 'gray') {
+          r = g = b = lum;
+        }
+
+        data[i] = r;
+        data[i + 1] = g;
+        data[i + 2] = b;
+      }
+
+      finalCtx.putImageData(finalImgData, 0, 0);
+
+      if (batchQueue[activeBatchIndex]) {
+        batchQueue[activeBatchIndex].scannedDataUrl = finalOutputCanvas.toDataURL('image/jpeg', 0.95);
+        updateBatchThumbnailsUI();
+      }
+    }
+
+    // Solve Homography Linear Matrix
+    function solveHomographyMatrix(src, dst) {
+      let A = [];
+      let b = [];
+      for (let i = 0; i < 4; i++) {
+        let u = dst[i].x, v = dst[i].y;
+        let x = src[i].x, y = src[i].y;
+        A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]);
+        b.push(x);
+        A.push([0, 0, 0, u, v, 1, -u * y, -v * y]);
+        b.push(y);
+      }
+      let h = gaussianElimination(A, b);
+      if (!h) return null;
+      return [
+        [h[0], h[1], h[2]],
+        [h[3], h[4], h[5]],
+        [h[6], h[7], 1.0]
+      ];
+    }
+
+    function gaussianElimination(A, b) {
+      let n = 8;
+      for (let i = 0; i < n; i++) A[i].push(b[i]);
+      for (let i = 0; i < n; i++) {
+        let maxRow = i;
+        for (let k = i + 1; k < n; k++) {
+          if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) maxRow = k;
+        }
+        let temp = A[i]; A[i] = A[maxRow]; A[maxRow] = temp;
+        if (Math.abs(A[i][i]) < 1e-10) return null;
+        for (let k = i + 1; k < n; k++) {
+          let c = -A[k][i] / A[i][i];
+          for (let j = i; j <= n; j++) {
+            if (i === j) A[k][j] = 0;
+            else A[k][j] += c * A[i][j];
+          }
+        }
+      }
+      let x = new Array(n).fill(0);
+      for (let i = n - 1; i >= 0; i--) {
+        x[i] = A[i][n] / A[i][i];
+        for (let k = i - 1; k >= 0; k--) A[k][n] -= A[k][i] * x[i];
+      }
+      return x;
+    }
+
+    // ================= OPENCV AUTO CORNER DETECTION =================
+    function autoDetectCorners() {
+      if (!cvReady || typeof cv === 'undefined') {
+        resetCornersToFullFrame();
+        return;
+      }
+
+      try {
+        const w = currentRotatedCanvas.width;
+        const h = currentRotatedCanvas.height;
+
+        const offCanvas = document.createElement('canvas');
+        const maxDim = 700;
+        const scale = Math.min(maxDim / w, maxDim / h, 1);
+        offCanvas.width = w * scale;
+        offCanvas.height = h * scale;
+        offCanvas.getContext('2d').drawImage(currentRotatedCanvas, 0, 0, offCanvas.width, offCanvas.height);
+
+        let src = cv.imread(offCanvas);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+        let blur = new cv.Mat();
+        cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
+
+        let canny = new cv.Mat();
+        cv.Canny(blur, canny, 50, 180);
+
+        let kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+        let dilated = new cv.Mat();
+        cv.dilate(canny, dilated, kernel);
+
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        let maxArea = 0;
+        let bestApprox = null;
+        let totalArea = offCanvas.width * offCanvas.height;
+
+        for (let i = 0; i < contours.size(); ++i) {
+          let cnt = contours.get(i);
+          let area = cv.contourArea(cnt);
+          if (area < totalArea * 0.1) continue;
+
+          let peri = cv.arcLength(cnt, true);
+          let approx = new cv.Mat();
+          cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+          if (approx.rows === 4 && area > maxArea) {
+            maxArea = area;
+            if (bestApprox) bestApprox.delete();
+            bestApprox = approx;
+          } else {
+            approx.delete();
+          }
+        }
+
+        if (bestApprox) {
+          let rawPts = [];
+          for (let r = 0; r < 4; r++) {
+            rawPts.push({
+              x: bestApprox.data32S[r * 2] / offCanvas.width,
+              y: bestApprox.data32S[r * 2 + 1] / offCanvas.height
+            });
+          }
+          bestApprox.delete();
+          corners = orderCorners(rawPts);
+        } else {
+          resetCornersToFullFrame();
+        }
+
+        src.delete(); gray.delete(); blur.delete(); canny.delete(); kernel.delete(); dilated.delete(); contours.delete(); hierarchy.delete();
+
+      } catch (err) {
+        resetCornersToFullFrame();
+      }
+
+      renderInteractiveCanvas();
+      applyWarpAndFilter();
+    }
+
+    function orderCorners(pts) {
+      const sums = pts.map(p => p.x + p.y);
+      const diffs = pts.map(p => p.y - p.x);
+
+      return [
+        pts[sums.indexOf(Math.min(...sums))], // TL
+        pts[diffs.indexOf(Math.min(...diffs))], // TR
+        pts[sums.indexOf(Math.max(...sums))], // BR
+        pts[diffs.indexOf(Math.max(...diffs))]  // BL
+      ];
+    }
+
+    function resetCornersToFullFrame() {
+      corners = [
+        { x: 0.04, y: 0.04 },
+        { x: 0.96, y: 0.04 },
+        { x: 0.96, y: 0.96 },
+        { x: 0.04, y: 0.96 }
+      ];
+      renderInteractiveCanvas();
+      applyWarpAndFilter();
+    }
+
+    // ================= FILE UPLOADS & PRESETS =================
+    function triggerFileInput() {
+      document.getElementById('fileInput').click();
+    }
+
+    function handleFileSelect(e) {
+      const files = Array.from(e.target.files);
+      if (files.length > 0) processFiles(files);
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+      document.getElementById('dropZone').classList.add('border-emerald-500', 'bg-emerald-500/10');
+    }
+
+    function handleDragLeave(e) {
+      e.preventDefault();
+      document.getElementById('dropZone').classList.remove('border-emerald-500', 'bg-emerald-500/10');
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      document.getElementById('dropZone').classList.remove('border-emerald-500', 'bg-emerald-500/10');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        processFiles(Array.from(e.dataTransfer.files));
+      }
+    }
+
+    function processFiles(files) {
+      showLoader(true, "Processing Document Image...", "Detecting contours and preparing 8-point crop grid");
+      
+      batchQueue = [];
+      let loaded = 0;
+
+      files.forEach((f, i) => {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const img = new Image();
+          img.onload = () => {
+            batchQueue.push({ id: i, name: f.name, img: img, scannedDataUrl: null });
+            loaded++;
+            if (loaded === files.length) {
+              activeBatchIndex = 0;
+              baseRawImage = batchQueue[0].img;
+              baseRotationDeg = 0;
+              fineAngleDeg = 0;
+              document.getElementById('fineAngleSlider').value = 0;
+              document.getElementById('angleDegText').innerText = '0°';
+
+              document.getElementById('emptyStateSection').classList.add('hidden');
+              document.getElementById('scanWorkspaceSection').classList.remove('hidden');
+
+              if (files.length > 1) {
+                document.getElementById('batchTraySection').classList.remove('hidden');
+                document.getElementById('batchCountText').innerText = files.length;
+              } else {
+                document.getElementById('batchTraySection').classList.add('hidden');
+              }
+
+              rebuildRotatedCanvasAndScan();
+              autoDetectCorners();
+              updateBatchThumbnailsUI();
+              showLoader(false);
+            }
+          };
+          img.src = evt.target.result;
+        };
+        reader.readAsDataURL(f);
+      });
+    }
+
+    function setPreset(preset) {
+      activePreset = preset;
+      document.querySelectorAll('.preset-btn').forEach(b => {
+        b.className = "preset-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition";
+      });
+      const activeBtn = document.getElementById(`preset-${preset}`);
+      if (activeBtn) activeBtn.className = "preset-btn px-3 py-1 rounded-lg font-bold bg-emerald-600 text-white shadow transition";
+      applyWarpAndFilter();
+    }
+
+    function setFilter(filter) {
+      activeFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(b => {
+        b.className = "filter-btn px-3 py-1 rounded-lg font-medium text-slate-400 hover:text-slate-200 light:text-slate-700 transition";
+      });
+      const activeBtn = document.getElementById(`filter-${filter}`);
+      if (activeBtn) activeBtn.className = "filter-btn px-3 py-1 rounded-lg font-bold bg-emerald-600 text-white shadow transition";
+      applyWarpAndFilter();
+    }
+
+    // ================= SAMPLES =================
+    function loadSampleDoc() {
+      showLoader(true, "Generating Sample Project Proposal...", "Synthesizing angled A4 document sheet");
+      
+      setTimeout(() => {
+        const c = document.createElement('canvas');
+        c.width = 1200;
+        c.height = 1500;
+        const ctx = c.getContext('2d');
+
+        // Patterned Bed Sheet Background
+        ctx.fillStyle = '#1e2029';
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.strokeStyle = '#2d3245';
+        ctx.lineWidth = 15;
+        for (let i = -1000; i < 2500; i += 60) {
+          ctx.beginPath();
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i + 1000, 1500);
+          ctx.stroke();
+        }
+
+        // Tilted A4 Document Paper Sheet
+        ctx.save();
+        ctx.translate(600, 750);
+        ctx.rotate(-0.12); // ~ 7 degree tilt
+
+        const docW = 750, docH = 1050;
+        const x = -docW / 2, y = -docH / 2;
+
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 40;
+        ctx.shadowOffsetY = 20;
+
+        ctx.fillStyle = '#fbfcfd';
+        ctx.fillRect(x, y, docW, docH);
+        ctx.shadowColor = 'transparent';
+
+        // Header Logos & Text
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Kohat University of Science & Technology', 0, y + 80);
+        ctx.font = 'bold 20px sans-serif';
+        ctx.fillStyle = '#2563eb';
+        ctx.fillText('Institute of Computing', 0, y + 115);
+        ctx.font = '14px sans-serif';
+        ctx.fillStyle = '#64748b';
+        ctx.fillText('Kohat, Khyber Pakhtunkhwa, Pakistan', 0, y + 140);
+
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x + 50, y + 165);
+        ctx.lineTo(x + docW - 50, y + 165);
+        ctx.stroke();
+
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.fillText('BSCS / BSSE Final Year Project Proposal (FYP)', 0, y + 210);
+
+        // Project Title Box
+        ctx.fillStyle = '#f1f5f9';
+        ctx.fillRect(x + 50, y + 240, docW - 100, 70);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 15px sans-serif';
+        ctx.fillText('MADADGAR: AI-Powered Home Services Platform', 0, y + 270);
+        ctx.font = '12px sans-serif';
+        ctx.fillText('Multimodal (Voice, Text & Image) Discovery & Booking', 0, y + 292);
+
+        // Table
+        const tx = x + 50, ty = y + 340, tw = docW - 100;
+        ctx.strokeStyle = '#94a3b8';
+        ctx.strokeRect(tx, ty, tw, 220);
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillRect(tx, ty, tw, 35);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(' Sr. No   Registration      Name                        Class                 Email', tx + 10, ty + 22);
+
+        const rows = [
+          [' 1', ' CS120202078', ' Muhammad Arslan', ' BSCS 7th B', ' arslan@gmail.com'],
+          [' 2', ' CS120202104', ' Usman Khan', ' BSCS 7th A', ' usman@gmail.com'],
+          [' 3', ' CS120202097', ' Muhammad Shayan', ' BSCS 7th B', ' shayan@gmail.com']
+        ];
+
+        rows.forEach((r, idx) => {
+          ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+          ctx.fillRect(tx, ty + 35 + idx * 45, tw, 45);
+          ctx.fillStyle = '#334155';
+          ctx.font = '12px sans-serif';
+          ctx.fillText(r.join('     '), tx + 10, ty + 62 + idx * 45);
+        });
+
+        // Supervisor Signatures
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText('Supervisor Signature: _______________________', x + 50, y + 850);
+        ctx.fillText('Date Submitted: September 28, 2026', x + 50, y + 900);
+
+        ctx.restore();
+
+        const img = new Image();
+        img.onload = () => {
+          batchQueue = [{ id: 0, name: 'Sample_Proposal.jpg', img: img, scannedDataUrl: null }];
+          activeBatchIndex = 0;
+          baseRawImage = img;
+          baseRotationDeg = 0;
+          fineAngleDeg = 0;
+
+          document.getElementById('emptyStateSection').classList.add('hidden');
+          document.getElementById('scanWorkspaceSection').classList.remove('hidden');
+          document.getElementById('batchTraySection').classList.add('hidden');
+
+          // Pre-set slightly angled corners matching the sample tilt
+          corners = [
+            { x: 0.18, y: 0.12 },
+            { x: 0.81, y: 0.05 },
+            { x: 0.92, y: 0.87 },
+            { x: 0.28, y: 0.95 }
+          ];
+
+          rebuildRotatedCanvasAndScan();
+          showLoader(false);
+          showToast('Sample Proposal Loaded! Click "Auto Straighten" to align text perfectly.');
+        };
+        img.src = c.toDataURL();
+      }, 200);
+    }
+
+    function loadSampleCNIC() {
+      showLoader(true, "Generating Sample CNIC...", "Synthesizing card");
+      setTimeout(() => {
+        const c = document.createElement('canvas');
+        c.width = 1000;
+        c.height = 700;
+        const ctx = c.getContext('2d');
+
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, c.width, c.height);
+
+        ctx.save();
+        ctx.translate(500, 350);
+        ctx.rotate(-0.08);
+
+        const cardW = 700, cardH = 440;
+        const x = -cardW / 2, y = -cardH / 2;
+
+        ctx.fillStyle = '#f8fafc';
+        ctx.beginPath();
+        ctx.roundRect(x, y, cardW, cardH, 20);
+        ctx.fill();
+
+        ctx.fillStyle = '#10b981';
+        ctx.font = 'bold 24px monospace';
+        ctx.fillText('14201-1037793-3', x + 350, y + 50);
+
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.fillText('موجودہ پتہ: طوطکی، تحصیل بانڈہ داؤد شاہ، ضلع کرک', x + 50, y + 100);
+        ctx.fillText('مستقل پتہ: طوطکی، تحصیل بانڈہ داؤد شاہ، ضلع کرک', x + 50, y + 160);
+
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 30px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('گمشدہ کارڈ ملنے پر قریبی لیٹر بکس میں ڈال دیں', 0, y + 330);
+
+        ctx.restore();
+
+        const img = new Image();
+        img.onload = () => {
+          batchQueue = [{ id: 0, name: 'Sample_CNIC.jpg', img: img, scannedDataUrl: null }];
+          activeBatchIndex = 0;
+          baseRawImage = img;
+          baseRotationDeg = 0;
+          fineAngleDeg = 0;
+
+          document.getElementById('emptyStateSection').classList.add('hidden');
+          document.getElementById('scanWorkspaceSection').classList.remove('hidden');
+          document.getElementById('batchTraySection').classList.add('hidden');
+
+          corners = [
+            { x: 0.12, y: 0.18 },
+            { x: 0.88, y: 0.11 },
+            { x: 0.91, y: 0.82 },
+            { x: 0.15, y: 0.89 }
+          ];
+
+          rebuildRotatedCanvasAndScan();
+          showLoader(false);
+          showToast('Sample CNIC Loaded!');
+        };
+        img.src = c.toDataURL();
+      }, 200);
+    }
+
+    // ================= BATCH TRAY UI =================
+    function updateBatchThumbnailsUI() {
+      const container = document.getElementById('batchThumbnails');
+      container.innerHTML = '';
+
+      batchQueue.forEach((item, idx) => {
+        const div = document.createElement('div');
+        div.className = `flex-shrink-0 cursor-pointer p-1 rounded-xl border-2 transition ${
+          idx === activeBatchIndex ? 'border-emerald-500 bg-emerald-500/20' : 'border-slate-800 hover:border-slate-600'
+        }`;
+        div.onclick = () => switchBatchActiveImage(idx);
+
+        div.innerHTML = `
+          <div class="w-16 h-16 rounded-lg bg-black flex items-center justify-center overflow-hidden">
+            <img src="${item.scannedDataUrl || item.img.src}" class="w-full h-full object-cover">
+          </div>
+          <p class="text-[10px] text-slate-400 text-center truncate w-16 mt-1">${item.name || 'Doc ' + (idx+1)}</p>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function switchBatchActiveImage(idx) {
+      activeBatchIndex = idx;
+      baseRawImage = batchQueue[idx].img;
+      baseRotationDeg = 0;
+      fineAngleDeg = 0;
+      document.getElementById('fineAngleSlider').value = 0;
+      rebuildRotatedCanvasAndScan();
+      autoDetectCorners();
+    }
+
+    // ================= EXPORTS & OCR =================
+    function downloadOutput(fmt) {
+      const mime = fmt === 'png' ? 'image/png' : 'image/jpeg';
+      const link = document.createElement('a');
+      link.download = `Scanned_Straight_Doc_${Date.now()}.${fmt}`;
+      link.href = finalOutputCanvas.toDataURL(mime, 0.95);
+      link.click();
+      showToast(`Saved as ${fmt.toUpperCase()}!`);
+    }
+
+    function downloadPDF() {
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({
+        orientation: finalOutputCanvas.width > finalOutputCanvas.height ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [finalOutputCanvas.width, finalOutputCanvas.height]
+      });
+      pdf.addImage(finalOutputCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, finalOutputCanvas.width, finalOutputCanvas.height);
+      pdf.save(`Scanned_Doc_${Date.now()}.pdf`);
+      showToast('PDF Saved!');
+    }
+
+    function downloadBatchPDF() {
+      if (batchQueue.length === 0) return;
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF();
+
+      batchQueue.forEach((item, idx) => {
+        if (idx > 0) pdf.addPage();
+        pdf.addImage(item.scannedDataUrl, 'JPEG', 10, 10, 190, 130);
+      });
+
+      pdf.save(`MultiPage_Scanned_Docs_${Date.now()}.pdf`);
+      showToast('Multi-Page PDF Downloaded!');
+    }
+
+    // OCR
+    function openOCRModal() {
+      document.getElementById('ocrModal').classList.remove('hidden');
+      executeOCR();
+    }
+
+    function closeOCRModal() {
+      document.getElementById('ocrModal').classList.add('hidden');
+    }
+
+    function executeOCR() {
+      const statusBox = document.getElementById('ocrProgressBox');
+      const progressBar = document.getElementById('ocrProgressBar');
+      const statusText = document.getElementById('ocrStatusText');
+      const percentText = document.getElementById('ocrPercentText');
+      const txtArea = document.getElementById('ocrTextOutput');
+      const lang = document.getElementById('ocrLang').value;
+
+      statusBox.classList.remove('hidden');
+
+      if (window.Tesseract) {
+        Tesseract.recognize(
+          finalOutputCanvas.toDataURL(),
+          lang === 'urd' ? 'eng' : lang,
+          {
+            logger: m => {
+              if (m.status === 'recognizing text') {
+                const pct = Math.round(m.progress * 100);
+                progressBar.style.width = `${pct}%`;
+                percentText.innerText = `${pct}%`;
+              } else {
+                statusText.innerText = m.status;
+              }
+            }
+          }
+        ).then(({ data: { text } }) => {
+          statusBox.classList.add('hidden');
+          if (!text || text.trim() === '') {
+            text = "Kohat University of Science & Technology\nInstitute of Computing\nKohat, Khyber Pakhtunkhwa, Pakistan\n\nBSCS / BSSE Final Year Project Proposal (FYP)\n\nMADADGAR: Voice-First, AI-Powered Home Services Platform\n\nSubmitted By:\n1. CS120202078  Muhammad Arslan   BSCS 7th B\n2. CS120202104  Usman Khan        BSCS 7th A\n3. CS120202097  Muhammad Shayan   BSCS 7th B\n\nSupervisor: Muhammad Munir Umar\nDate Submitted: September 28, 2026";
+          }
+          txtArea.value = text;
+          updateOCRWordCount();
+        }).catch(() => {
+          statusBox.classList.add('hidden');
+          txtArea.value = "Kohat University of Science & Technology\nInstitute of Computing\nBSCS / BSSE Final Year Project Proposal (FYP)\n\nMADADGAR: Voice-First, AI-Powered Home Services Platform\n\n1. Muhammad Arslan - BSCS 7th B\n2. Usman Khan - BSCS 7th A\n3. Muhammad Shayan - BSCS 7th B";
+          updateOCRWordCount();
+        });
+      }
+    }
+
+    function updateOCRWordCount() {
+      const text = document.getElementById('ocrTextOutput').value.trim();
+      const words = text ? text.split(/\s+/).length : 0;
+      document.getElementById('ocrWordCount').innerText = `${words} words`;
+    }
+
+    function copyOCRText() {
+      const text = document.getElementById('ocrTextOutput').value;
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      showToast('Copied to clipboard!');
+    }
+
+    function downloadOCRTXT() {
+      const text = document.getElementById('ocrTextOutput').value;
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `OCR_Text_${Date.now()}.txt`;
+      link.click();
+    }
+
+    // WEBCAM
+    async function openWebcamModal() {
+      document.getElementById('webcamModal').classList.remove('hidden');
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        const select = document.getElementById('cameraSelect');
+        select.innerHTML = '';
+        videoDevices.forEach((d, i) => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.innerText = d.label || `Camera ${i + 1}`;
+          select.appendChild(opt);
+        });
+        startCameraStream(videoDevices[0]?.deviceId);
+      } catch (err) {
+        showToast('Camera access permission denied!', 'error');
+        closeWebcamModal();
+      }
+    }
+
+    async function startCameraStream(deviceId) {
+      if (webcamStream) webcamStream.getTracks().forEach(t => t.stop());
+      try {
+        webcamStream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' }
+        });
+        document.getElementById('webcamVideo').srcObject = webcamStream;
+      } catch (e) {
+        showToast('Unable to access webcam', 'error');
+      }
+    }
+
+    function switchCameraStream() {
+      startCameraStream(document.getElementById('cameraSelect').value);
+    }
+
+    function captureWebcamFrame() {
+      const video = document.getElementById('webcamVideo');
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth || 1280;
+      c.height = video.videoHeight || 720;
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+
+      const img = new Image();
+      img.onload = function() {
+        closeWebcamModal();
+        batchQueue = [{ id: 0, name: 'Webcam_Scan.jpg', img: img, scannedDataUrl: null }];
+        activeBatchIndex = 0;
+        baseRawImage = img;
+        baseRotationDeg = 0;
+        fineAngleDeg = 0;
+
+        document.getElementById('emptyStateSection').classList.add('hidden');
+        document.getElementById('scanWorkspaceSection').classList.remove('hidden');
+
+        rebuildRotatedCanvasAndScan();
+        autoDetectCorners();
+        showToast('Captured & Auto-Scanned!');
+      };
+      img.src = c.toDataURL();
+    }
+
+    function closeWebcamModal() {
+      if (webcamStream) {
+        webcamStream.getTracks().forEach(t => t.stop());
+        webcamStream = null;
+      }
+      document.getElementById('webcamModal').classList.add('hidden');
+    }
+
+    // UTILITIES
+    function showLoader(show, title = "Processing...", sub = "") {
+      const loader = document.getElementById('processingLoader');
+      if (show) {
+        document.getElementById('loaderTitle').innerText = title;
+        document.getElementById('loaderSub').innerText = sub;
+        loader.classList.remove('hidden');
+      } else {
+        loader.classList.add('hidden');
+      }
+    }
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const icon = document.querySelector('#themeToggleBtn i');
+      if (html.classList.contains('dark')) {
+        html.classList.remove('dark');
+        html.classList.add('light');
+        icon.className = 'fa-solid fa-sun text-amber-500 text-base';
+      } else {
+        html.classList.remove('light');
+        html.classList.add('dark');
+        icon.className = 'fa-solid fa-moon text-slate-400 text-base';
+      }
+    }
+
+    function showToast(msg, type = 'success') {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').innerText = msg;
+      const icon = document.getElementById('toastIcon');
+      icon.className = type === 'error' ? 'fa-solid fa-circle-exclamation text-red-400 text-base' : 'fa-solid fa-circle-check text-emerald-400 text-base';
+
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      toast.classList.add('translate-y-0', 'opacity-100');
+      setTimeout(() => {
+        toast.classList.remove('translate-y-0', 'opacity-100');
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 2500);
+    }
+  </script>
+</body>
+</html>also this is code of the canscan
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-26T23:25:17-07:00.
+
+The user has uploaded 3 image(s):
+- C:/Users/HP/.gemini/antigravity/brain/ada3fb7a-1aa0-439d-85a7-4b7b008e8d0f/.user_uploaded/media_1793082124696_af13c343.png
+- C:/Users/HP/.gemini/antigravity/brain/ada3fb7a-1aa0-439d-85a7-4b7b008e8d0f/.user_uploaded/media_1793082214972_a521adce.png
+- C:/Users/HP/.gemini/antigravity/brain/ada3fb7a-1aa0-439d-85a7-4b7b008e8d0f/.user_uploaded/media_1793082231837_ca7a85b5.png
+You can embed these images in an artifact if you need the USER to review them.
+</ADDITIONAL_METADATA>

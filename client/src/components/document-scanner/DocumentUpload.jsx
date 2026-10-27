@@ -7,13 +7,16 @@ import {
   HiOutlineCamera,
   HiOutlineDocumentSearch,
   HiOutlineLightningBolt,
-  HiOutlinePhotograph,
+  HiOutlineDocumentText,
+  HiOutlineIdentification,
 } from 'react-icons/hi';
+import { createSampleProposalFile, createSampleCnicFile } from '../../services/sampleDocumentService';
 
 export default function DocumentUpload({ onAddFiles, isProcessing }) {
   const [isDragging, setIsDragging] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [cameraStream, setCameraStream] = useState(null);
+  const [generatingSample, setGeneratingSample] = useState(false);
 
   const fileInputRef = useRef(null);
   const videoRef = useRef(null);
@@ -96,38 +99,66 @@ export default function DocumentUpload({ onAddFiles, isProcessing }) {
     closeCameraModal();
   };
 
+  // Sample Loaders
+  const handleLoadSampleProposal = async () => {
+    setGeneratingSample(true);
+    try {
+      const file = await createSampleProposalFile();
+      await onAddFiles([file]);
+      toast.success('Sample Proposal loaded! Click "Auto Straighten" or drag handles to crop.');
+    } catch (err) {
+      toast.error('Failed to generate sample');
+    } finally {
+      setGeneratingSample(false);
+    }
+  };
+
+  const handleLoadSampleCnic = async () => {
+    setGeneratingSample(true);
+    try {
+      const file = await createSampleCnicFile();
+      await onAddFiles([file]);
+      toast.success('Sample Pakistani CNIC loaded! Test "CNIC Card" aspect preset & OCR.');
+    } catch (err) {
+      toast.error('Failed to generate sample CNIC');
+    } finally {
+      setGeneratingSample(false);
+    }
+  };
+
   return (
     <>
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`relative border-2 border-dashed rounded-2xl p-8 text-center transition-all ${
+        className={`relative border-2 border-dashed rounded-3xl p-10 sm:p-14 text-center transition-all shadow-xl ${
           isDragging
-            ? 'border-blue-600 bg-blue-50/70 scale-[0.99]'
-            : 'border-gray-300 bg-white hover:border-blue-400 hover:bg-slate-50/50'
+            ? 'border-emerald-500 bg-emerald-50/70 scale-[0.99]'
+            : 'border-emerald-500/30 bg-slate-900/90 hover:border-emerald-400 hover:bg-slate-900'
         }`}
       >
-        <div className="max-w-md mx-auto space-y-3">
-          <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto shadow-2xs">
-            <HiOutlineDocumentSearch className="w-8 h-8" />
+        <div className="max-w-lg mx-auto space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white flex items-center justify-center mx-auto shadow-xl shadow-emerald-500/20 text-3xl">
+            <HiOutlineDocumentSearch className="w-9 h-9" />
           </div>
 
           <div>
-            <h3 className="text-base font-bold text-gray-900">
-              Drag & Drop document photos here
+            <h3 className="text-xl font-extrabold text-white">
+              Drop Document Photos Here
             </h3>
-            <p className="text-xs text-gray-500 mt-1">
-              Supports mobile camera photos, scanned pages, ID cards, receipts, and book pages.
+            <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+              Upload tilted document photos or ID cards. The system auto-detects corners, deskews crooked tilt, and gives you 8 control handles (corners + edge midpoints) to straighten and crop.
             </p>
           </div>
 
-          <div className="flex items-center justify-center gap-3 pt-1 flex-wrap">
+          {/* Primary Action Buttons */}
+          <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
             <button
               type="button"
-              disabled={isProcessing}
+              disabled={isProcessing || generatingSample}
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-600/30 transition-colors cursor-pointer"
             >
               <HiOutlineUpload className="w-4 h-4" />
               Browse Files
@@ -148,18 +179,42 @@ export default function DocumentUpload({ onAddFiles, isProcessing }) {
 
             <button
               type="button"
+              disabled={isProcessing || generatingSample}
               onClick={openCameraModal}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-xl text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
             >
-              <HiOutlineCamera className="w-4 h-4 text-gray-500" />
+              <HiOutlineCamera className="w-4 h-4 text-emerald-400" />
               Camera Snap
             </button>
           </div>
 
-          <div className="text-[11px] text-gray-400 pt-2 flex items-center justify-center gap-2 flex-wrap">
-            <span>• Formats: JPG, PNG, WebP</span>
-            <span>• Max 10 MB per file</span>
-            <span>• Universal Document Engine</span>
+          {/* Quick Demo Test Samples */}
+          <div className="pt-3 border-t border-slate-800 flex items-center justify-center gap-2.5 flex-wrap">
+            <span className="text-[11px] font-semibold text-slate-400">Quick Demo Tests:</span>
+            <button
+              type="button"
+              disabled={isProcessing || generatingSample}
+              onClick={handleLoadSampleProposal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition"
+            >
+              <HiOutlineDocumentText className="w-3.5 h-3.5" />
+              Try Sample Proposal (A4)
+            </button>
+            <button
+              type="button"
+              disabled={isProcessing || generatingSample}
+              onClick={handleLoadSampleCnic}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded-lg text-xs font-semibold transition"
+            >
+              <HiOutlineIdentification className="w-3.5 h-3.5" />
+              Try Sample CNIC Card
+            </button>
+          </div>
+
+          <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-center gap-3 flex-wrap">
+            <span>• Single or Batch Multi-Page Scan</span>
+            <span>• 8-Point Crop & Deskew</span>
+            <span>• Built-in OCR</span>
           </div>
         </div>
       </div>
@@ -193,7 +248,7 @@ export default function DocumentUpload({ onAddFiles, isProcessing }) {
                 variant="primary"
                 onClick={capturePhoto}
                 disabled={!cameraStream}
-                className="flex items-center gap-2 px-5 py-2 font-bold bg-blue-600 hover:bg-blue-700"
+                className="flex items-center gap-2 px-5 py-2 font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md"
               >
                 <HiOutlineLightningBolt className="w-4 h-4" />
                 Capture Document Photo
