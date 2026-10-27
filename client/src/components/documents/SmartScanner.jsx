@@ -275,74 +275,123 @@ function drawInteractive(canvas, rotCanvas, corners, isDragging, activeIdx) {
   return scale;
 }
 
-// ─── Auto edge detection (Sobel gradient, pure JS) ───────────────────────────
+// ─── Auto edge detection (improved — finds bright card on dark background) ────
 
 function autoDetectCorners(canvas) {
   const W = canvas.width, H = canvas.height;
-  // Work on a small copy for speed
-  const scale = Math.min(1, 500 / Math.max(W, H));
+  // Work on small copy for speed
+  const scale = Math.min(1, 600 / Math.max(W, H));
   const sw = Math.round(W * scale), sh = Math.round(H * scale);
   const small = document.createElement('canvas');
   small.width = sw; small.height = sh;
   small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
   const d = small.getContext('2d').getImageData(0, 0, sw, sh).data;
 
-  // Grayscale
-  const gray = new Float32Array(sw * sh);
+  // Build grayscale
+  const gray = new Uint8Array(sw * sh);
   for (let i = 0; i < sw * sh; i++)
-    gray[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+    gray[i] = Math.round(0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2]);
 
-  // Sobel edge magnitude
-  const edges = new Float32Array(sw * sh);
-  for (let y = 1; y < sh - 1; y++) {
-    for (let x = 1; x < sw - 1; x++) {
-      const gx =
-        -gray[(y-1)*sw+(x-1)] + gray[(y-1)*sw+(x+1)]
-        -2*gray[y*sw+(x-1)]   + 2*gray[y*sw+(x+1)]
-        -gray[(y+1)*sw+(x-1)] + gray[(y+1)*sw+(x+1)];
-      const gy =
-        -gray[(y-1)*sw+(x-1)] - 2*gray[(y-1)*sw+x] - gray[(y-1)*sw+(x+1)]
-        +gray[(y+1)*sw+(x-1)] + 2*gray[(y+1)*sw+x] + gray[(y+1)*sw+(x+1)];
-      edges[y*sw+x] = Math.sqrt(gx*gx + gy*gy);
+  // Otsu threshold to separate card from background
+  const hist = new Int32Array(256);
+  for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+  const total = gray.length;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, maxVar = 0, otsu = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = total - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxVar) { maxVar = v; otsu = t; }
+  }
+
+  // Binary mask
+  const mask = new Uint8Array(sw * sh);
+  for (let i = 0; i < gray.length; i++) mask[i] = gray[i] > otsu ? 1 : 0;
+
+  // Morphological close (fill small holes) — simple box dilation then erosion
+  const margin = Math.round(sw * 0.03);
+  const kSize = 5;
+
+  // Find connected bright region closest to center
+  const cx = sw / 2, cy = sh / 2;
+  // Scan outward from center to find a bright pixel, then flood-fill bounds
+  let startX = -1, startY = -1;
+  for (let r = 0; r < Math.max(sw, sh) / 2; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        const x = Math.round(cx + dx), y = Math.round(cy + dy);
+        if (x < 0 || x >= sw || y < 0 || y >= sh) continue;
+        if (mask[y * sw + x]) { startX = x; startY = y; }
+      }
+      if (startX !== -1) break;
+    }
+    if (startX !== -1) break;
+  }
+
+  if (startX === -1) {
+    // Fallback: use bounding box of all bright pixels
+    let minX = sw, minY = sh, maxX = 0, maxY = 0;
+    for (let y = margin; y < sh - margin; y++) {
+      for (let x = margin; x < sw - margin; x++) {
+        if (mask[y*sw+x]) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX <= minX || maxY <= minY) {
+      return [ {x:0.05,y:0.05},{x:0.95,y:0.05},{x:0.95,y:0.95},{x:0.05,y:0.95} ];
+    }
+    const inv = 1 / scale;
+    return [
+      { x: Math.max(0.01, (minX*inv)/W), y: Math.max(0.01, (minY*inv)/H) },
+      { x: Math.min(0.99, (maxX*inv)/W), y: Math.max(0.01, (minY*inv)/H) },
+      { x: Math.min(0.99, (maxX*inv)/W), y: Math.min(0.99, (maxY*inv)/H) },
+      { x: Math.max(0.01, (minX*inv)/W), y: Math.min(0.99, (maxY*inv)/H) },
+    ];
+  }
+
+  // BFS flood fill from startX,startY to get bounding box
+  const visited = new Uint8Array(sw * sh);
+  const queue = [startY * sw + startX];
+  visited[startY * sw + startX] = 1;
+  let minX = startX, minY = startY, maxX = startX, maxY = startY;
+  while (queue.length) {
+    const idx = queue.pop();
+    const x = idx % sw, y = Math.floor(idx / sw);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    const neighbors = [
+      [x-1,y],[x+1,y],[x,y-1],[x,y+1],
+      [x-1,y-1],[x+1,y-1],[x-1,y+1],[x+1,y+1],
+    ];
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= sw || ny < 0 || ny >= sh) continue;
+      const ni = ny * sw + nx;
+      if (!visited[ni] && mask[ni]) {
+        visited[ni] = 1;
+        queue.push(ni);
+      }
     }
   }
 
-  // Find max edge for threshold
-  let maxE = 0;
-  for (let i = 0; i < edges.length; i++) if (edges[i] > maxE) maxE = edges[i];
-  const thresh = maxE * 0.18;
-  const margin = Math.round(sw * 0.04);
-
-  // Find the extreme edge-pixel closest to each corner
-  const findCorner = (qx, qy) => {
-    const cx = qx === 0 ? 0 : sw, cy = qy === 0 ? 0 : sh;
-    let best = null, bestDist = Infinity;
-    for (let y = margin; y < sh - margin; y++) {
-      for (let x = margin; x < sw - margin; x++) {
-        if (edges[y*sw+x] < thresh) continue;
-        if (qx === 0 && x > sw * 0.65) continue;
-        if (qx === 1 && x < sw * 0.35) continue;
-        if (qy === 0 && y > sh * 0.65) continue;
-        if (qy === 1 && y < sh * 0.35) continue;
-        const dist = Math.hypot(x - cx, y - cy);
-        if (dist < bestDist) { bestDist = dist; best = { x, y }; }
-      }
-    }
-    return best;
-  };
-
-  const pts = [
-    findCorner(0, 0) || { x: sw*0.08, y: sh*0.08 },
-    findCorner(1, 0) || { x: sw*0.92, y: sh*0.08 },
-    findCorner(1, 1) || { x: sw*0.92, y: sh*0.92 },
-    findCorner(0, 1) || { x: sw*0.08, y: sh*0.92 },
-  ];
+  // Add small padding
+  const pad = Math.round(sw * 0.01);
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(sw - 1, maxX + pad); maxY = Math.min(sh - 1, maxY + pad);
 
   const inv = 1 / scale;
-  return pts.map(p => ({
-    x: Math.max(0.02, Math.min(0.98, (p.x * inv) / W)),
-    y: Math.max(0.02, Math.min(0.98, (p.y * inv) / H)),
-  }));
+  return [
+    { x: Math.max(0.01, (minX*inv)/W), y: Math.max(0.01, (minY*inv)/H) },
+    { x: Math.min(0.99, (maxX*inv)/W), y: Math.max(0.01, (minY*inv)/H) },
+    { x: Math.min(0.99, (maxX*inv)/W), y: Math.min(0.99, (maxY*inv)/H) },
+    { x: Math.max(0.01, (minX*inv)/W), y: Math.min(0.99, (maxY*inv)/H) },
+  ];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
