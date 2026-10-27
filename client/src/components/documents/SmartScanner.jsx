@@ -264,8 +264,8 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   useEffect(() => {
     if (step === STEP.CROP && originalImage && cropCanvasRef.current) {
       const canvas = cropCanvasRef.current;
-      const maxW   = canvas.parentElement?.clientWidth  || 680;
-      const maxH   = window.innerHeight * 0.52;
+      const maxW   = canvas.parentElement?.clientWidth  || 600;
+      const maxH   = 320; // hard cap — ensures buttons always visible in modal
       const scale  = Math.min(maxW / originalImage.naturalWidth,
                               maxH / originalImage.naturalHeight, 1);
       canvas.width  = Math.round(originalImage.naturalWidth  * scale);
@@ -280,8 +280,8 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
     const fn = () => {
       if (step === STEP.CROP && originalImage && cropCanvasRef.current) {
         const canvas = cropCanvasRef.current;
-        const maxW   = canvas.parentElement?.clientWidth  || 680;
-        const maxH   = window.innerHeight * 0.52;
+        const maxW   = canvas.parentElement?.clientWidth  || 600;
+        const maxH   = 320;
         const scale  = Math.min(maxW / originalImage.naturalWidth,
                                 maxH / originalImage.naturalHeight, 1);
         canvas.width  = Math.round(originalImage.naturalWidth  * scale);
@@ -490,25 +490,24 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   const content = (
     <div className="space-y-4">
 
-      {/* Status bar — only shown when relevant */}
-      <div className="flex items-center gap-2 flex-wrap min-h-[28px]">
-        {/* Only show loading spinner when actually downloading OpenCV */}
-        {cvLoading && step !== STEP.UPLOAD && (
+      {/* Status bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {cvLoading && (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-amber-50 text-amber-700 border border-amber-200">
             <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
             </svg>
-            Detecting edges…
+            Loading OpenCV engine…
           </span>
         )}
-        {cvReady && !cvLoading && step === STEP.CROP && (
+        {cvReady && !cvLoading && (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-            ⚡ Auto-detection ready
+            ⚡ OpenCV WASM Engine Ready
           </span>
         )}
         {cvError && (
-          <span className="text-xs text-amber-600">⚠ OpenCV unavailable — drag handles to crop manually</span>
+          <span className="text-xs text-amber-600">OpenCV unavailable — manual crop only</span>
         )}
       </div>
 
@@ -629,7 +628,7 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
               ← Back
             </Button>
             <Button variant="primary" onClick={handleScan}
-              disabled={!corners || processing}
+              disabled={!corners || processing || !window.cv?.Mat}
               className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
               {processing ? (
                 <>
@@ -639,8 +638,16 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
                   </svg>
                   Processing…
                 </>
+              ) : !window.cv?.Mat ? (
+                <>
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                  </svg>
+                  Loading engine…
+                </>
               ) : (
-                <><HiOutlineLightningBolt className="w-4 h-4" /> Scan & Straighten</>
+                <><HiOutlineLightningBolt className="w-4 h-4" /> Scan &amp; Straighten</>
               )}
             </Button>
           </div>
@@ -673,10 +680,10 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
           </div>
 
           <div className="rounded-xl overflow-hidden border border-gray-200 bg-slate-100 flex items-center
-            justify-center p-3" style={{ maxHeight: '52vh' }}>
+            justify-center p-3" style={{ maxHeight: '320px' }}>
             <img src={resultUrl} alt="Scanned"
               className="max-h-full max-w-full object-contain rounded shadow"
-              style={{ maxHeight: '48vh' }} />
+              style={{ maxHeight: '300px' }} />
           </div>
 
           <div className="flex items-center justify-between gap-3">
