@@ -275,6 +275,76 @@ function drawInteractive(canvas, rotCanvas, corners, isDragging, activeIdx) {
   return scale;
 }
 
+// ─── Auto edge detection (Sobel gradient, pure JS) ───────────────────────────
+
+function autoDetectCorners(canvas) {
+  const W = canvas.width, H = canvas.height;
+  // Work on a small copy for speed
+  const scale = Math.min(1, 500 / Math.max(W, H));
+  const sw = Math.round(W * scale), sh = Math.round(H * scale);
+  const small = document.createElement('canvas');
+  small.width = sw; small.height = sh;
+  small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
+  const d = small.getContext('2d').getImageData(0, 0, sw, sh).data;
+
+  // Grayscale
+  const gray = new Float32Array(sw * sh);
+  for (let i = 0; i < sw * sh; i++)
+    gray[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+
+  // Sobel edge magnitude
+  const edges = new Float32Array(sw * sh);
+  for (let y = 1; y < sh - 1; y++) {
+    for (let x = 1; x < sw - 1; x++) {
+      const gx =
+        -gray[(y-1)*sw+(x-1)] + gray[(y-1)*sw+(x+1)]
+        -2*gray[y*sw+(x-1)]   + 2*gray[y*sw+(x+1)]
+        -gray[(y+1)*sw+(x-1)] + gray[(y+1)*sw+(x+1)];
+      const gy =
+        -gray[(y-1)*sw+(x-1)] - 2*gray[(y-1)*sw+x] - gray[(y-1)*sw+(x+1)]
+        +gray[(y+1)*sw+(x-1)] + 2*gray[(y+1)*sw+x] + gray[(y+1)*sw+(x+1)];
+      edges[y*sw+x] = Math.sqrt(gx*gx + gy*gy);
+    }
+  }
+
+  // Find max edge for threshold
+  let maxE = 0;
+  for (let i = 0; i < edges.length; i++) if (edges[i] > maxE) maxE = edges[i];
+  const thresh = maxE * 0.18;
+  const margin = Math.round(sw * 0.04);
+
+  // Find the extreme edge-pixel closest to each corner
+  const findCorner = (qx, qy) => {
+    const cx = qx === 0 ? 0 : sw, cy = qy === 0 ? 0 : sh;
+    let best = null, bestDist = Infinity;
+    for (let y = margin; y < sh - margin; y++) {
+      for (let x = margin; x < sw - margin; x++) {
+        if (edges[y*sw+x] < thresh) continue;
+        if (qx === 0 && x > sw * 0.65) continue;
+        if (qx === 1 && x < sw * 0.35) continue;
+        if (qy === 0 && y > sh * 0.65) continue;
+        if (qy === 1 && y < sh * 0.35) continue;
+        const dist = Math.hypot(x - cx, y - cy);
+        if (dist < bestDist) { bestDist = dist; best = { x, y }; }
+      }
+    }
+    return best;
+  };
+
+  const pts = [
+    findCorner(0, 0) || { x: sw*0.08, y: sh*0.08 },
+    findCorner(1, 0) || { x: sw*0.92, y: sh*0.08 },
+    findCorner(1, 1) || { x: sw*0.92, y: sh*0.92 },
+    findCorner(0, 1) || { x: sw*0.08, y: sh*0.92 },
+  ];
+
+  const inv = 1 / scale;
+  return pts.map(p => ({
+    x: Math.max(0.02, Math.min(0.98, (p.x * inv) / W)),
+    y: Math.max(0.02, Math.min(0.98, (p.y * inv) / H)),
+  }));
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_CORNERS = [
@@ -298,7 +368,7 @@ const FILTERS = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function SmartScanner({ isOpen, onClose, onScanned, embedded = false }) {
+export default function SmartScanner({ isOpen, onClose, onScanned, embedded = false, lockedPreset = null }) {
   // Image state
   const [rawImage,     setRawImage]     = useState(null);  // HTMLImageElement
   const [rotCanvas,    setRotCanvas]    = useState(null);  // rotated canvas
@@ -309,7 +379,7 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
   const [corners,    setCorners]    = useState(DEFAULT_CORNERS);
   const [baseDeg,    setBaseDeg]    = useState(0);
   const [fineDeg,    setFineDeg]    = useState(0);
-  const [preset,     setPreset]     = useState('auto');
+  const [preset,     setPreset]     = useState(lockedPreset || 'auto');
   const [filter,     setFilter]     = useState('magic');
   const [processing, setProcessing] = useState(false);
   const [error,      setError]      = useState(null);
@@ -370,9 +440,17 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
 
   // ── Load image ────────────────────────────────────────────────────────────
   const loadImage = useCallback((img) => {
+    // Build canvas from image to run edge detection
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    c.getContext('2d').drawImage(img, 0, 0);
+
+    // Auto-detect corners using Sobel edge detection
+    const detected = autoDetectCorners(c);
+
     setRawImage(img);
     setBaseDeg(0); setFineDeg(0);
-    setCorners(DEFAULT_CORNERS);
+    setCorners(detected);
     setHasImage(true);
     setError(null);
   }, []);
@@ -629,20 +707,22 @@ export default function SmartScanner({ isOpen, onClose, onScanned, embedded = fa
             </div>
           </div>
 
-          {/* Toolbar row 2 — presets + filters */}
+          {/* Toolbar row 2 — presets + filters (presets hidden when locked) */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 gap-0.5">
-              {PRESETS.map(p => (
-                <button key={p.id} onClick={() => setPreset(p.id)}
-                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
-                    preset === p.id
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            {!lockedPreset && (
+              <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 gap-0.5">
+                {PRESETS.map(p => (
+                  <button key={p.id} onClick={() => setPreset(p.id)}
+                    className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+                      preset === p.id
+                        ? 'bg-emerald-600 text-white shadow'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 gap-0.5">
               {FILTERS.map(f => (
                 <button key={f.id} onClick={() => setFilter(f.id)}

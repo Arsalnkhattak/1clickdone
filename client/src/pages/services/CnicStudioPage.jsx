@@ -423,6 +423,7 @@ export default function CnicStudioPage() {
           isOpen={scannerOpen}
           onClose={() => setScannerOpen(false)}
           onScanned={handleScanned}
+          lockedPreset="cnic"
         />
       )}
 
