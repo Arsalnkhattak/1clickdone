@@ -16,6 +16,8 @@ import reportsRoutes from './modules/reports/reports.routes.js';
 import documentRoutes from './modules/documents/document.routes.js';
 import layoutRoutes from './modules/print-layouts/layout.routes.js';
 import billingRoutes from './modules/billing/billing.routes.js';
+import printJobRoutes from './modules/print-jobs/printJob.routes.js';
+import { startRetentionSchedule } from './utils/fileRetention.js';
 
 // Initialize Express app
 const app = express();
@@ -61,6 +63,7 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/print-layouts', layoutRoutes);
 app.use('/api/billing', billingRoutes);
+app.use('/api/print-jobs', printJobRoutes);
 
 // 404 handler for undefined routes
 app.all('*', (req, res) => {
@@ -87,6 +90,18 @@ const startServer = async () => {
     const server = app.listen(env.PORT, () => {
       console.log(`🚀 1Click server running on port ${env.PORT} (${env.NODE_ENV})`);
       console.log(`   Health check: http://localhost:${env.PORT}/api/health`);
+      // Start file retention cleanup schedule (every 12h, remove files older than 24h)
+      startRetentionSchedule(12, 24);
+    });
+
+    // Handle port already in use gracefully
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${env.PORT} is already in use. Stop the other process first.`);
+        process.exit(1);
+      } else {
+        throw err;
+      }
     });
 
     // ──────────────────────────────────────

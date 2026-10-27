@@ -1,58 +1,98 @@
 /**
- * useOpenCV — loads OpenCV.js on demand (only when this hook runs).
- * The modal is only mounted when the user opens it, so this never
- * fires on a regular page load.
+ * useOpenCV — On-demand OpenCV.js loader.
+ * Does NOT load opencv.js automatically on mount.
+ * Call loadCV() only when the user explicitly requests CV features (e.g. Auto Detect).
+ * The page always works immediately using Canvas 2D engine.
  */
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 
-const OPENCV_CDN = 'https://docs.opencv.org/4.9.0/opencv.js';
+const LOCAL_OPENCV = '/opencv.js';
+const LOAD_TIMEOUT_MS = 8000;
 
-let loadPromise = null;
+let sharedLoadPromise = null;
 
-function loadOpenCV() {
-  if (loadPromise) return loadPromise;
+function loadOpenCVScript() {
+  if (sharedLoadPromise) return sharedLoadPromise;
 
-  loadPromise = new Promise((resolve, reject) => {
+  sharedLoadPromise = new Promise((resolve, reject) => {
+    // Already loaded
     if (window.cv && window.cv.Mat) {
       resolve(window.cv);
       return;
     }
 
     const script = document.createElement('script');
-    script.src = OPENCV_CDN;
+    script.src = LOCAL_OPENCV;
     script.async = true;
 
+    const timer = setTimeout(() => {
+      script.onload = null;
+      script.onerror = null;
+      sharedLoadPromise = null;
+      reject(new Error('OpenCV load timeout'));
+    }, LOAD_TIMEOUT_MS);
+
     script.onload = () => {
-      if (window.cv && window.cv.Mat) {
-        resolve(window.cv);
-      } else if (window.cv) {
-        window.cv.onRuntimeInitialized = () => resolve(window.cv);
-      } else {
-        reject(new Error('OpenCV failed to initialize'));
-      }
+      clearTimeout(timer);
+      // cv may need a moment to initialise after script load
+      let attempts = 0;
+      const check = setInterval(() => {
+        attempts++;
+        if (window.cv && window.cv.Mat) {
+          clearInterval(check);
+          resolve(window.cv);
+        } else if (attempts > 40) {
+          clearInterval(check);
+          sharedLoadPromise = null;
+          reject(new Error('OpenCV runtime did not initialise'));
+        }
+      }, 100);
     };
 
     script.onerror = () => {
-      loadPromise = null; // allow retry
-      reject(new Error('Failed to load OpenCV.js — check internet connection'));
+      clearTimeout(timer);
+      sharedLoadPromise = null;
+      reject(new Error('Failed to load opencv.js'));
     };
 
     document.head.appendChild(script);
   });
 
-  return loadPromise;
+  return sharedLoadPromise;
 }
 
 export function useOpenCV() {
-  const [cvReady, setCvReady] = useState(!!(window.cv && window.cv.Mat));
+  // Start as true so the page shows "Engine Ready" immediately — Canvas 2D always works
+  const [cvReady, setCvReady] = useState(false);
+  const [cvLoading, setCvLoading] = useState(false);
   const [cvError, setCvError] = useState(null);
 
-  useEffect(() => {
-    if (cvReady) return;
-    loadOpenCV()
-      .then(() => setCvReady(true))
-      .catch((err) => setCvError(err.message));
-  }, [cvReady]);
+  // Check if already loaded (e.g. user navigated away and back)
+  const isAlreadyLoaded = !!(window.cv && window.cv.Mat);
 
-  return { cvReady, cvError };
+  const loadCV = useCallback(async () => {
+    if (isAlreadyLoaded || cvReady) return window.cv;
+    if (cvLoading) return sharedLoadPromise;
+
+    setCvLoading(true);
+    setCvError(null);
+    try {
+      const cv = await loadOpenCVScript();
+      setCvReady(true);
+      setCvLoading(false);
+      return cv;
+    } catch (err) {
+      setCvLoading(false);
+      setCvError(err.message);
+      return null;
+    }
+  }, [isAlreadyLoaded, cvReady, cvLoading]);
+
+  return {
+    cvReady: isAlreadyLoaded || cvReady,
+    cvLoading,
+    cvError,
+    loadCV, // call this when you actually need OpenCV
+    cv: (isAlreadyLoaded || cvReady) ? window.cv : null,
+  };
 }

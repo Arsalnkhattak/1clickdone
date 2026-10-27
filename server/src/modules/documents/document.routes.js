@@ -21,6 +21,9 @@ router.use(authenticate);
 // Standalone upload for Scan-to-PDF / workspace
 router.post('/upload', upload.array('files', 20), docController.uploadStandalone);
 
+// Cleanup temporary unreferenced files
+router.post('/cleanup-temp', docController.cleanupTempFiles);
+
 // Scan to PDF pipeline
 router.post('/scan-to-pdf', docController.scanToPdf);
 

@@ -61,6 +61,7 @@ export const TASK_PRIORITIES = [
 
 export const NAV_ITEMS = [
   { name: 'Dashboard', path: '/', icon: 'HiOutlineHome' },
+  { name: 'Document Scanner', path: '/scan', icon: 'HiOutlineDocumentSearch' },
   { name: 'Customers', path: '/customers', icon: 'HiOutlineUsers' },
   { name: 'All Tasks', path: '/tasks', icon: 'HiOutlineClipboardList' },
   { name: 'Add New Task', path: '/tasks/new', icon: 'HiOutlinePlusCircle' },

@@ -3,6 +3,7 @@ import fs from 'fs';
 import asyncHandler from '../../utils/asyncHandler.js';
 import { sendSuccess } from '../../utils/response.js';
 import * as documentService from './document.service.js';
+import { cleanTemporaryFiles } from '../../utils/fileRetention.js';
 import AppError from '../../utils/AppError.js';
 
 const uploadDir = path.resolve(process.cwd(), 'uploads');
@@ -115,4 +116,10 @@ export const serveFile = asyncHandler(async (req, res) => {
 
   const fileStream = fs.createReadStream(filePath);
   fileStream.pipe(res);
+});
+
+export const cleanupTempFiles = asyncHandler(async (req, res) => {
+  const maxAgeHours = Number(req.query.maxAgeHours) || 24;
+  const result = await cleanTemporaryFiles(maxAgeHours);
+  sendSuccess(res, result, `Temporary file retention cleanup completed. ${result.cleanedCount} files removed.`);
 });
