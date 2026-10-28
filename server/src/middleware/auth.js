@@ -12,9 +12,11 @@ import env from '../config/env.js';
 const auth = asyncHandler(async (req, res, next) => {
   let token;
 
-  // 1. Extract token from Authorization header
+  // 1. Extract token from Authorization header or query param
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
+  } else if (req.query && req.query.token) {
+    token = req.query.token;
   }
 
   if (!token) {

@@ -160,28 +160,49 @@ function applyWarpAndFilter(rotCanvas, corners, preset, filter) {
   }
   warpCtx.putImageData(dstData, 0, 0);
 
-  // Apply filter
+  // Apply filter — improved Magic Color matches CamScanner output
   const fData = warpCtx.getImageData(0, 0, targetW, targetH);
   const fd = fData.data;
-  for (let i = 0; i < fd.length; i += 4) {
-    let r = fd[i], g = fd[i+1], b = fd[i+2];
-    const lum = 0.299*r + 0.587*g + 0.114*b;
-    if (filter === 'magic') {
-      if (lum > 115) {
-        r = Math.min(255, r * 1.25 + 10);
-        g = Math.min(255, g * 1.25 + 10);
-        b = Math.min(255, b * 1.25 + 10);
-      } else {
-        r = Math.max(0, r * 0.7);
-        g = Math.max(0, g * 0.7);
-        b = Math.max(0, b * 0.7);
-      }
-    } else if (filter === 'bw') {
-      r = g = b = lum > 128 ? 255 : 0;
-    } else if (filter === 'gray') {
-      r = g = b = lum;
+
+  if (filter === 'magic') {
+    // Step 1: compute per-channel min/max for auto-levels stretch
+    let minR=255,minG=255,minB=255,maxR=0,maxG=0,maxB=0;
+    for (let i = 0; i < fd.length; i += 4) {
+      if (fd[i]   < minR) minR = fd[i];   if (fd[i]   > maxR) maxR = fd[i];
+      if (fd[i+1] < minG) minG = fd[i+1]; if (fd[i+1] > maxG) maxG = fd[i+1];
+      if (fd[i+2] < minB) minB = fd[i+2]; if (fd[i+2] > maxB) maxB = fd[i+2];
     }
-    fd[i] = r; fd[i+1] = g; fd[i+2] = b;
+    const rng = (v, lo, hi) => hi > lo ? (v - lo) / (hi - lo) : 1;
+    for (let i = 0; i < fd.length; i += 4) {
+      // Auto-stretch each channel
+      let r = rng(fd[i],   minR, maxR) * 255;
+      let g = rng(fd[i+1], minG, maxG) * 255;
+      let b = rng(fd[i+2], minB, maxB) * 255;
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      // Boost bright areas (paper/background) and darken dark areas (ink/text)
+      if (lum > 140) {
+        r = Math.min(255, r * 1.35 + 20);
+        g = Math.min(255, g * 1.35 + 20);
+        b = Math.min(255, b * 1.35 + 20);
+      } else if (lum > 80) {
+        r = Math.min(255, r * 1.1);
+        g = Math.min(255, g * 1.1);
+        b = Math.min(255, b * 1.1);
+      } else {
+        r = Math.max(0, r * 0.55);
+        g = Math.max(0, g * 0.55);
+        b = Math.max(0, b * 0.55);
+      }
+      fd[i] = r; fd[i+1] = g; fd[i+2] = b;
+    }
+  } else {
+    for (let i = 0; i < fd.length; i += 4) {
+      let r = fd[i], g = fd[i+1], b = fd[i+2];
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      if (filter === 'bw') { r = g = b = lum > 128 ? 255 : 0; }
+      else if (filter === 'gray') { r = g = b = lum; }
+      fd[i] = r; fd[i+1] = g; fd[i+2] = b;
+    }
   }
   warpCtx.putImageData(fData, 0, 0);
   return warpC;

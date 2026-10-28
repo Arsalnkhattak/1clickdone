@@ -220,6 +220,154 @@ export const generatePassportLayout = async ({
 };
 
 /**
+ * Portrait Photo Studio Layout Engine
+ * Optimized for single portrait photo printing (4x6 / 102x152mm standard, 5x7, A5, etc.)
+ * Positions the photo at the top of an A4 sheet (saving the bottom paper) or on direct 4x6 paper.
+ * Supports:
+ * - fitMode: 'cover' (fills 4x6 frame, edge-to-edge) or 'contain' (entire photo with white margins)
+ * - rotation: 0, 90, 180, 270 deg
+ * - positionOnPage: 'top' (starts at top margin) or 'center'
+ */
+export const generatePortraitPhotoLayout = async ({
+  storageKey,
+  photoSize = '4x6',
+  customWidthMm,
+  customHeightMm,
+  fitMode = 'cover',
+  positionOnPage = 'top',
+  paperSize = 'A4',
+  rotation = 0,
+  showCutMarks = true,
+  outputName = 'Portrait_Photo_Print.pdf',
+}) => {
+  const filePath = path.join(uploadDir, storageKey);
+  if (!fs.existsSync(filePath)) {
+    throw new AppError('Photo image not found', 404);
+  }
+
+  // 1. Determine physical dimensions in mm
+  let widthMm = 102;
+  let heightMm = 152;
+  if (photoSize === '4x6') {
+    widthMm = 102;
+    heightMm = 152;
+  } else if (photoSize === '5x7') {
+    widthMm = 127;
+    heightMm = 178;
+  } else if (photoSize === 'a4') {
+    widthMm = 210;
+    heightMm = 297;
+  } else if (photoSize === 'a5') {
+    widthMm = 148;
+    heightMm = 210;
+  } else if (photoSize === 'wallet') {
+    widthMm = 64;
+    heightMm = 89;
+  } else if (photoSize === 'custom' && customWidthMm && customHeightMm) {
+    widthMm = parseFloat(customWidthMm);
+    heightMm = parseFloat(customHeightMm);
+  }
+
+  // 2. High-res rasterization with Sharp (300 DPI for crisp photo lab quality)
+  const pxWidth = Math.max(10, Math.round(widthMm * (300 / 25.4)));
+  const pxHeight = Math.max(10, Math.round(heightMm * (300 / 25.4)));
+
+  let pipeline = sharp(filePath);
+  const rot = parseInt(rotation, 10) || 0;
+  if (rot && rot % 360 !== 0) {
+    pipeline = pipeline.rotate(rot);
+  }
+
+  // Apply Cover vs Contain
+  if (fitMode === 'contain') {
+    pipeline = pipeline.resize(pxWidth, pxHeight, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    });
+  } else {
+    // Default 'cover'
+    pipeline = pipeline.resize(pxWidth, pxHeight, {
+      fit: 'cover',
+      position: 'centre',
+    });
+  }
+
+  const processedBuffer = await pipeline.jpeg({ quality: 98 }).toBuffer();
+
+  const pdfDoc = await PDFDocument.create();
+  const embeddedImg = await pdfDoc.embedJpg(processedBuffer);
+
+  // 3. Page dimensions
+  let [pageW, pageH] = PAPER_SIZES_PT[paperSize] || PAPER_SIZES_PT.A4;
+  if (paperSize === 'Photo4x6') {
+    pageW = convertToPoints(102, 'mm');
+    pageH = convertToPoints(152, 'mm');
+  }
+
+  const itemW = convertToPoints(widthMm, 'mm');
+  const itemH = convertToPoints(heightMm, 'mm');
+
+  // 4. Position on paper
+  let x = Math.max(0, (pageW - itemW) / 2);
+  let y;
+
+  if (paperSize === 'Photo4x6' || photoSize === 'a4') {
+    x = 0;
+    y = 0;
+  } else if (positionOnPage === 'top') {
+    // Placed at top margin (8mm) so shopkeepers can cut photo and save the rest of the sheet
+    const topMarginPt = convertToPoints(8, 'mm');
+    y = pageH - topMarginPt - itemH;
+  } else {
+    // Center of page
+    y = (pageH - itemH) / 2;
+  }
+
+  const page = pdfDoc.addPage([pageW, pageH]);
+
+  // Draw image
+  page.drawImage(embeddedImg, {
+    x,
+    y,
+    width: itemW,
+    height: itemH,
+  });
+
+  // Draw optional faint cutting guides around the photo
+  if (showCutMarks && paperSize !== 'Photo4x6' && photoSize !== 'a4') {
+    page.drawRectangle({
+      x,
+      y,
+      width: itemW,
+      height: itemH,
+      borderColor: rgb(0.65, 0.65, 0.65),
+      borderWidth: 0.5,
+    });
+  }
+
+  const pdfBytes = await pdfDoc.save();
+  const outFilename = `portrait-${Date.now()}-${outputName}`;
+  const outPath = path.join(uploadDir, outFilename);
+  fs.writeFileSync(outPath, pdfBytes);
+
+  return {
+    filename: outFilename,
+    originalName: outputName,
+    size: pdfBytes.length,
+    mimeType: 'application/pdf',
+    copiesCount: 1,
+    pagesCount: 1,
+    dimensions: {
+      widthMm,
+      heightMm,
+      fitMode,
+      positionOnPage,
+      paperSize,
+    },
+  };
+};
+
+/**
  * CNIC (National ID Card) Layout Engine
  * Standard ID-1 dimensions: 85.60 × 53.98 mm (Standard Pakistani CNIC / Smart Card)
  *

@@ -5,8 +5,9 @@
  *   • A4 Printing       — upload files, set layout, generate print-ready PDF
  *   • Custom Printing   — exact dimensions (mm/cm/in), multi-copy grid
  *   • Multiple Files    — upload many files at once, merge into one PDF
+ *   • Portrait Photo    — single portrait photo print (4x6, 5x7, A4, etc.)
+ *   • Passport Photos   — 35x45mm, 2x2in, custom sizes, background changer
  *   • Poster / Large    — coming soon
- *   • ID Card Print     — coming soon
  */
 import { useState, useEffect } from 'react';
 import api from '../../api/axios';
@@ -15,6 +16,8 @@ import FilePreviewModal from '../../components/documents/FilePreviewModal';
 import ImageEditorModal from '../../components/editor/ImageEditorModal';
 import ScanDocumentsPage, { ScanDocumentsTab } from '../documents/ScanDocumentsPage';
 import CnicStudioPage from '../services/CnicStudioPage';
+import PassportStudioPage from '../services/PassportStudioPage';
+import PortraitStudioPage from '../services/PortraitStudioPage';
 import toast from 'react-hot-toast';
 import {
   HiOutlinePrinter,
@@ -36,16 +39,19 @@ import {
   HiOutlineCamera,
   HiOutlineScissors,
   HiOutlineSparkles,
+  HiOutlinePhotograph,
 } from 'react-icons/hi';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 const TABS = [
-  { id: 'scan',     label: 'Scan & Documents', icon: HiOutlineDocumentSearch },
-  { id: 'cnic',     label: 'CNIC Printing',    icon: HiOutlineIdentification },
-  { id: 'a4',       label: 'A4 Printing',      icon: HiOutlinePrinter },
-  { id: 'custom',   label: 'Custom Printing',  icon: HiOutlineTemplate },
-  { id: 'multiple', label: 'Multiple Files',   icon: HiOutlineCollection },
-  { id: 'poster',   label: 'Poster / Large',   icon: HiOutlineViewGrid },
+  { id: 'scan',      label: 'Scan & Documents', icon: HiOutlineDocumentSearch },
+  { id: 'cnic',      label: 'CNIC Printing',    icon: HiOutlineIdentification },
+  { id: 'a4',        label: 'A4 Printing',      icon: HiOutlinePrinter },
+  { id: 'custom',    label: 'Custom Printing',  icon: HiOutlineTemplate },
+  { id: 'multiple',  label: 'Multiple Files',   icon: HiOutlineCollection },
+  { id: 'portrait',  label: 'Portrait Photo',   icon: HiOutlinePhotograph },
+  { id: 'passport',  label: 'Passport Photos',  icon: HiOutlineCamera },
+  { id: 'poster',    label: 'Poster / Large',   icon: HiOutlineViewGrid },
 ];
 
 // ─── Reusable task selector ───────────────────────────────────────────────────
@@ -686,7 +692,7 @@ export default function PrintingPage() {
           Printing Studio
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          Scan & documents, CNIC, A4, custom sizes, merge multiple files — all in one place
+          Scan & documents, CNIC, A4, custom sizes, portrait photos, passport photos, merge files — all in one place
         </p>
       </div>
 
@@ -719,6 +725,8 @@ export default function PrintingPage() {
         {activeTab === 'a4'       && <A4PrintingTab       tasks={tasks} token={token} />}
         {activeTab === 'custom'   && <CustomPrintingTab   tasks={tasks} token={token} />}
         {activeTab === 'multiple' && <MultipleFilesTab    tasks={tasks} token={token} />}
+        {activeTab === 'portrait' && <PortraitStudioPage />}
+        {activeTab === 'passport' && <PassportStudioPage />}
         {activeTab === 'poster'   && <ComingSoonTab title="Poster & Large Format Printing" description="Print banners, posters, and large format documents. Coming soon." />}
       </div>
     </div>

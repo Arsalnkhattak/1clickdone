@@ -5,7 +5,7 @@
  */
 import { useState } from 'react';
 import PassportStudioPage from '../services/PassportStudioPage';
-import CustomPrintStudioPage from '../services/CustomPrintStudioPage';
+import PortraitStudioPage from '../services/PortraitStudioPage';
 import { HiOutlineCamera, HiOutlinePhotograph } from 'react-icons/hi';
 
 const TABS = [
@@ -54,7 +54,7 @@ export default function PhotosPage() {
       {/* Tab content — render existing pages directly */}
       <div>
         {activeTab === 'passport' && <PassportStudioPage />}
-        {activeTab === 'portrait' && <CustomPrintStudioPage />}
+        {activeTab === 'portrait' && <PortraitStudioPage />}
       </div>
     </div>
   );

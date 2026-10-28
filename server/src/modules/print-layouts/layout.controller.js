@@ -74,6 +74,47 @@ export const generatePassport = asyncHandler(async (req, res) => {
   sendSuccess(res, result, 'Passport photo layout generated successfully', 201);
 });
 
+export const generatePortrait = asyncHandler(async (req, res) => {
+  const {
+    storageKey,
+    photoSize,
+    customWidthMm,
+    customHeightMm,
+    fitMode,
+    positionOnPage,
+    paperSize,
+    rotation,
+    showCutMarks,
+    outputName,
+    taskId,
+  } = req.body;
+
+  const result = await layoutService.generatePortraitPhotoLayout({
+    storageKey,
+    photoSize: photoSize || '4x6',
+    customWidthMm,
+    customHeightMm,
+    fitMode: fitMode || 'cover',
+    positionOnPage: positionOnPage || 'top',
+    paperSize: paperSize || 'A4',
+    rotation: rotation ? parseInt(rotation, 10) : 0,
+    showCutMarks: showCutMarks !== false,
+    outputName: outputName || 'Portrait_Photo_Print.pdf',
+  });
+
+  if (taskId) {
+    const fileObj = {
+      originalname: result.originalName,
+      mimetype: result.mimeType,
+      size: result.size,
+      filename: result.filename,
+    };
+    await documentService.attachFilesToTask(taskId, [fileObj], 'output', req.user._id);
+  }
+
+  sendSuccess(res, result, 'Portrait photo layout generated successfully', 201);
+});
+
 export const generateCustom = asyncHandler(async (req, res) => {
   const {
     storageKey,
