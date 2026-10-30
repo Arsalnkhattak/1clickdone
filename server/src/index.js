@@ -27,9 +27,19 @@ const app = express();
 // Middleware
 // ──────────────────────────────────────
 
-// CORS — allow frontend dev server
+// CORS — allow frontend dev server and production Netlify URL
+const allowedOrigins = [
+  'http://localhost:5173',
+  process.env.CLIENT_URL, // Set this in Render to your Netlify URL e.g. https://your-app.netlify.app
+].filter(Boolean);
+
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Render health checks)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
+  },
   credentials: true,
 }));
 
